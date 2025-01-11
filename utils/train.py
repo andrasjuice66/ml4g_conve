@@ -4,48 +4,64 @@ import wandb
 from tqdm import tqdm
 from typing import Dict
 import torch.nn.functional as F
+import os
 
 @torch.no_grad()
-def evaluate(model, dataloader, device) -> Dict[str, float]:
-    """Evaluate the model on the given dataloader."""
+def evaluate(model, dataloader, device):
     model.eval()
-    
     ranks = []
-    hits_at_1 = []
-    hits_at_3 = []
-    hits_at_10 = []
+    hits = {1: [], 3: [], 10: []}
     
-    for batch in tqdm(dataloader, desc="Evaluating"):
-        # Move batch to device
-        subject = batch['subject'].to(device)
-        relation = batch['relation'].to(device)
-        obj = batch['object'].to(device)
-        filter_out = batch['filter_out'].to(device)
-        
-        # Get scores for all possible objects
-        scores = model(subject, relation)
-        
-        # Get target scores
-        target_scores = scores.gather(1, obj.unsqueeze(1))
-        
-        # Filter out known positive triples
-        for i in range(scores.shape[0]):
-            scores[i, filter_out[i, :]] = float('-inf')
-        
-        # Compute rank
-        ranks_batch = (scores >= target_scores).sum(dim=1)
-        
-        ranks.extend(ranks_batch.cpu().tolist())
-        hits_at_1.extend((ranks_batch <= 1).float().cpu().tolist())
-        hits_at_3.extend((ranks_batch <= 3).float().cpu().tolist())
-        hits_at_10.extend((ranks_batch <= 10).float().cpu().tolist())
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating"):
+            # Move batch to device
+            subject = batch['subject'].to(device)
+            relation = batch['relation'].to(device)
+            object_true = batch['object'].to(device)
+            filter_out = batch['filter_out'].to(device)
+            
+            # Get scores for all entities
+            scores = model(subject, relation)
+            
+            # Filter out known positive triples except the current target
+            for idx, (s, r, o, filt) in enumerate(zip(subject, relation, object_true, filter_out)):
+                # Create a mask for filtered evaluation
+                mask = torch.ones_like(scores[idx], dtype=torch.bool)
+                mask[filt] = False
+                mask[o] = True  # Keep the target triple
+                
+                # Apply filter
+                filtered_scores = scores[idx].clone()
+                filtered_scores[~mask] = float('-inf')
+                
+                # Get rank of true object
+                rank = (filtered_scores >= filtered_scores[o]).sum().item()
+                ranks.append(rank)
+                
+                # Calculate hits@k
+                for k in hits.keys():
+                    hits[k].append(1 if rank <= k else 0)
     
-    return {
+    # Ensure we have ranks before calculating metrics
+    if not ranks:
+        return {
+            'mr': 0.0,
+            'mrr': 0.0,
+            'hits@1': 0.0,
+            'hits@3': 0.0,
+            'hits@10': 0.0
+        }
+    
+    # Calculate metrics
+    metrics = {
+        'mr': sum(ranks) / len(ranks),
         'mrr': sum(1/r for r in ranks) / len(ranks),
-        'hits@1': sum(hits_at_1) / len(hits_at_1),
-        'hits@3': sum(hits_at_3) / len(hits_at_3),
-        'hits@10': sum(hits_at_10) / len(hits_at_10),
+        'hits@1': sum(hits[1]) / len(hits[1]),
+        'hits@3': sum(hits[3]) / len(hits[3]),
+        'hits@10': sum(hits[10]) / len(hits[10])
     }
+    
+    return metrics
 
 def train_conve(
     model,
@@ -59,6 +75,9 @@ def train_conve(
     save_path: str = "checkpoints"
 ):
     """Train the ConvE model."""
+    
+    # Create checkpoint directory if it doesn't exist
+    os.makedirs(save_path, exist_ok=True)
     
     # Move model to device
     model = model.to(device)
@@ -106,6 +125,7 @@ def train_conve(
             wandb.log({
                 'epoch': epoch + 1,
                 'train_loss': total_loss / len(train_dataloader),
+                'valid_mr': metrics['mr'],
                 'valid_mrr': metrics['mrr'],
                 'valid_hits@1': metrics['hits@1'],
                 'valid_hits@3': metrics['hits@3'],
@@ -123,6 +143,7 @@ def train_conve(
                 }, f"{save_path}/best_model.pt")
             
             print(f"\nEpoch {epoch+1} Validation Metrics:")
+            print(f"MR: {metrics['mr']:.1f}")
             print(f"MRR: {metrics['mrr']:.4f}")
             print(f"Hits@1: {metrics['hits@1']:.4f}")
             print(f"Hits@3: {metrics['hits@3']:.4f}")

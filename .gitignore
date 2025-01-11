@@ -1,0 +1,62 @@
+# macOS specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Machine Learning outputs and logs
+logs/
+checkpoints/
+bestmodel.pth
+
+# Weights and Biases
+wandb/
+wandb-debug.log
+
+# Temporary files
+*.temp
+*.tmp
+
+# Compiled Python files
+*.so
+
+# System-specific files
+Thumbs.db
+*.swp
+
+# Other machine learning artifacts
+*.h5
+*.ckpt
+*.pkl
+*.joblib
+*.onnx
+
+# TensorBoard logs
+runs/
+
+debug.log
+
+# Large datasets
+*.csv
+data/
+*.parquet
+
+# Ignore specific IDE/editor configurations
+.vscode/
+.idea/
+*.code-workspace
+
+# Conda environment files
+*.conda
+*.lock
