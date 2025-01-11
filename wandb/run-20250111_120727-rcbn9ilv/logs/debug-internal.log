@@ -1,0 +1,15 @@
+{"time":"2025-01-11T12:07:27.927975+01:00","level":"INFO","msg":"stream: starting","core version":"0.19.2","symlink path":"/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/wandb/run-20250111_120727-rcbn9ilv/logs/debug-core.log"}
+{"time":"2025-01-11T12:07:28.239533+01:00","level":"INFO","msg":"created new stream","id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:28.239616+01:00","level":"INFO","msg":"stream: started","id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:28.239637+01:00","level":"INFO","msg":"handler: started","stream_id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:28.239714+01:00","level":"INFO","msg":"writer: Do: started","stream_id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:28.239725+01:00","level":"INFO","msg":"sender: started","stream_id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:28.571222+01:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-01-11T12:07:28.661927+01:00","level":"INFO","msg":"stream: closing","id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:28.662042+01:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-01-11T12:07:28.662583+01:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-01-11T12:07:29.522193+01:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-01-11T12:07:29.695768+01:00","level":"INFO","msg":"handler: closed","stream_id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:29.695798+01:00","level":"INFO","msg":"writer: Close: closed","stream_id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:29.695819+01:00","level":"INFO","msg":"sender: closed","stream_id":"rcbn9ilv"}
+{"time":"2025-01-11T12:07:29.696132+01:00","level":"INFO","msg":"stream: closed","id":"rcbn9ilv"}

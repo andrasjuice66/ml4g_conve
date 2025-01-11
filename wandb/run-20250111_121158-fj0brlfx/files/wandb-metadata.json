@@ -1,0 +1,44 @@
+{
+  "os":  "macOS-14.2-arm64-arm-64bit",
+  "python":  "CPython 3.11.10",
+  "startedAt":  "2025-01-11T11:11:58.776037Z",
+  "program":  "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/main.py",
+  "codePath":  "main.py",
+  "git":  {
+    "remote":  "https://github.com/andrasjuice66/ml4g_conve.git",
+    "commit":  "45c1264135c77254d5adadb63681900a12e7efde"
+  },
+  "email":  "joos.andras@gmail.com",
+  "root":  "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred",
+  "host":  "Andrass-Air",
+  "executable":  "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/venv/bin/python",
+  "codePathLocal":  "main.py",
+  "cpu_count":  8,
+  "cpu_count_logical":  8,
+  "disk":  {
+    "/":  {
+      "total":  "245107195904",
+      "used":  "229985624064"
+    },
+    "/System/Volumes/Data":  {
+      "total":  "245107195904",
+      "used":  "229985624064"
+    }
+  },
+  "memory":  {
+    "total":  "8589934592"
+  },
+  "cpu":  {
+    "count":  8,
+    "countLogical":  8
+  },
+  "apple":  {
+    "name":  "Apple M1",
+    "ecpuCores":  4,
+    "pcpuCores":  4,
+    "gpuCores":  7,
+    "memoryGb":  8,
+    "swapTotalBytes":  "9663676416",
+    "ramTotalBytes":  "8589934592"
+  }
+}

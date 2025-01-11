@@ -1,0 +1,20 @@
+{
+  "os":  "macOS-14.2-arm64-arm-64bit",
+  "python":  "CPython 3.11.10",
+  "startedAt":  "2025-01-11T11:07:27.926255Z",
+  "args":  [
+    "--data_dir",
+    "FB15k-237"
+  ],
+  "program":  "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/main.py",
+  "codePath":  "main.py",
+  "git":  {
+    "remote":  "https://github.com/andrasjuice66/ml4g_conve.git",
+    "commit":  "45c1264135c77254d5adadb63681900a12e7efde"
+  },
+  "email":  "joos.andras@gmail.com",
+  "root":  "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred",
+  "host":  "Andrass-Air",
+  "executable":  "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/venv/bin/python",
+  "codePathLocal":  "main.py"
+}

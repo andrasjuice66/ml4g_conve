@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse
 from models.conve import ConvE
 from utils.preprocess import KGDataLoader, create_dataloader
-from LinkPred.utils.train import train_conve
+from utils.train import train_conve
 import wandb
 
 def main(args):
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train ConvE model')
     
     # Data arguments
-    parser.add_argument('--data_dir', type=str, required=True,
+    parser.add_argument('--data_dir', type=str, default="data/FB15k-237",
                         help='Directory containing train/valid/test files')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for data loading')

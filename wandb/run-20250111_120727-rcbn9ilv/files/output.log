@@ -1,0 +1,14 @@
+Loading data...
+Traceback (most recent call last):
+  File "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/main.py", line 102, in <module>
+    main(args)
+  File "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/main.py", line 22, in main
+    datasets = data_loader.load_data()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/utils/preprocess.py", line 54, in load_data
+    train_triples = self._load_triples('train.txt')
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/utils/preprocess.py", line 72, in _load_triples
+    with open(filepath) as f:
+         ^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'FB15k-237/train.txt'
