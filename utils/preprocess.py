@@ -90,7 +90,7 @@ def create_dataloader(
     dataset: KGDataset,
     batch_size: int,
     shuffle: bool = True,
-    num_workers: int = 4
+    num_workers: int = 2
 ) -> DataLoader:
     return DataLoader(
         dataset,
