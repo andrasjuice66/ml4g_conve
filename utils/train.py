@@ -81,6 +81,63 @@ def train_conve(
     
     # Training loop
     best_mrr = 0
+    train_losses = []
+    valid_losses = []
+    
+    def compute_loss_stats(dataloader, prefix=""):
+        model.eval()
+        total_loss = 0
+        all_scores = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                # Move batch to device
+                subject = batch['subject'].to(device)
+                relation = batch['relation'].to(device)
+                obj = batch['object'].to(device)
+                
+                # Forward pass
+                scores = model(subject, relation)
+                
+                # Create target tensor with label smoothing
+                n_entities = scores.size(1)
+                targets = torch.zeros_like(scores).to(device)
+                targets.scatter_(1, obj.unsqueeze(1), 1)
+                targets = ((1.0 - label_smoothing) * targets) + (label_smoothing/n_entities)
+                
+                # Compute loss
+                loss = F.binary_cross_entropy(scores, targets)
+                total_loss += loss.item()
+                
+                all_scores.append(scores.cpu())
+                all_targets.append(targets.cpu())
+        
+        avg_loss = total_loss / len(dataloader)
+        all_scores = torch.cat(all_scores)
+        all_targets = torch.cat(all_targets)
+        
+        print(f"\n{prefix} Loss Statistics:")
+        print(f"Average Loss: {avg_loss:.6f}")
+        print(f"Scores - min: {all_scores.min():.4f}, max: {all_scores.max():.4f}, mean: {all_scores.mean():.4f}")
+        pos_scores = all_scores[all_targets > 0.5]
+        neg_scores = all_scores[all_targets < 0.5]
+        print(f"Positive scores - mean: {pos_scores.mean():.4f}, count: {len(pos_scores)}")
+        print(f"Negative scores - mean: {neg_scores.mean():.4f}, count: {len(neg_scores)}")
+        
+        return avg_loss
+    
+    # Compute initial losses
+    initial_train_loss = compute_loss_stats(train_dataloader, "Initial Training")
+    initial_valid_loss = compute_loss_stats(valid_dataloader, "Initial Validation")
+    
+    # Log initial metrics
+    wandb.log({
+        'epoch': 0,
+        'train_loss': initial_train_loss,
+        'valid_loss': initial_valid_loss,
+    })
+    
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -113,14 +170,21 @@ def train_conve(
                 total_loss += loss.item()
                 pbar.set_postfix({'loss': f"{loss.item():.4f}"})
         
+        # Calculate average training loss
+        avg_train_loss = total_loss / len(train_dataloader)
+        train_losses.append(avg_train_loss)
+        
         # Evaluate on validation set
         if (epoch + 1) % eval_every == 0:
             metrics = evaluate(model, valid_dataloader, device)
+            valid_loss = compute_loss_stats(valid_dataloader)
+            valid_losses.append(valid_loss)
             
             # Log metrics
             wandb.log({
                 'epoch': epoch + 1,
-                'train_loss': total_loss / len(train_dataloader),
+                'train_loss': avg_train_loss,
+                'valid_loss': valid_loss,
                 'valid_mr': metrics['mr'],
                 'valid_mrr': metrics['mrr'],
                 'valid_hits@1': metrics['hits@1'],
@@ -138,7 +202,9 @@ def train_conve(
                     'best_mrr': best_mrr,
                 }, f"{save_path}/best_model.pt")
             
-            print(f"\nEpoch {epoch+1} Validation Metrics:")
+            print(f"\nEpoch {epoch+1} Metrics:")
+            print(f"Training Loss: {avg_train_loss:.6f}")
+            print(f"Validation Loss: {valid_loss:.6f}")
             print(f"MR: {metrics['mr']:.1f}")
             print(f"MRR: {metrics['mrr']:.4f}")
             print(f"Hits@1: {metrics['hits@1']:.4f}")

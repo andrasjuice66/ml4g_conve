@@ -74,7 +74,7 @@ def main(data_path, dataset='FB15k-237'):
         train_dataloader=train_loader,
         valid_dataloader=valid_loader,
         device=device,
-        **train_params
+        **train_params  
     )
 
     # Final evaluation on test set
