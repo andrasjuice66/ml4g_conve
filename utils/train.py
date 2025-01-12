@@ -9,53 +9,49 @@ import os
 @torch.no_grad()
 def evaluate(model, dataloader, device):
     model.eval()
-    ranks = []
+    ranks_left = []
+    ranks_right = []
     hits = {1: [], 3: [], 10: []}
     
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
-            # Move batch to device
-            subject = batch['subject'].to(device)
-            relation = batch['relation'].to(device)
-            object_true = batch['object'].to(device)
-            filter_out = batch['filter_out'].to(device)
+    for batch in tqdm(dataloader, desc="Evaluating"):
+        subject = batch['subject'].to(device)
+        relation = batch['relation'].to(device)
+        object_true = batch['object'].to(device)
+        filter_o = batch['filter_o'].to(device)
+        filter_s = batch['filter_s'].to(device)
+        
+        # Forward direction (object corruption)
+        scores1 = model(subject, relation)
+        # Reverse direction (subject corruption) - use same relation
+        scores2 = model(object_true, relation)  # Using same relation, model handles direction
+        
+        for idx, (s, r, o) in enumerate(zip(subject, relation, object_true)):
+            # Object corruption
+            mask1 = torch.ones_like(scores1[idx], dtype=torch.bool)
+            mask1[filter_o[idx]] = False  # Apply forward filters
+            mask1[o] = True
+            filtered_scores1 = scores1[idx].clone()
+            filtered_scores1[~mask1] = float('-inf')
+            rank1 = (filtered_scores1 >= filtered_scores1[o]).sum().item()
             
-            # Get scores for all entities
-            scores = model(subject, relation)
+            # Subject corruption
+            mask2 = torch.ones_like(scores2[idx], dtype=torch.bool)
+            mask2[filter_s[idx]] = False  # Apply reverse filters
+            mask2[s] = True
+            filtered_scores2 = scores2[idx].clone()
+            filtered_scores2[~mask2] = float('-inf')
+            rank2 = (filtered_scores2 >= filtered_scores2[s]).sum().item()
             
-            # Filter out known positive triples except the current target
-            for idx, (s, r, o, filt) in enumerate(zip(subject, relation, object_true, filter_out)):
-                # Create a mask for filtered evaluation
-                mask = torch.ones_like(scores[idx], dtype=torch.bool)
-                mask[filt] = False
-                mask[o] = True  # Keep the target triple
-                
-                # Apply filter
-                filtered_scores = scores[idx].clone()
-                filtered_scores[~mask] = float('-inf')
-                
-                # Get rank of true object
-                rank = (filtered_scores >= filtered_scores[o]).sum().item()
-                ranks.append(rank)
-                
-                # Calculate hits@k
-                for k in hits.keys():
-                    hits[k].append(1 if rank <= k else 0)
-    
-    # Ensure we have ranks before calculating metrics
-    if not ranks:
-        return {
-            'mr': 0.0,
-            'mrr': 0.0,
-            'hits@1': 0.0,
-            'hits@3': 0.0,
-            'hits@10': 0.0
-        }
-    
-    # Calculate metrics
+            ranks_left.append(rank1)
+            ranks_right.append(rank2)
+            
+            for k in hits.keys():
+                hits[k].append(1 if rank1 <= k else 0)
+                hits[k].append(1 if rank2 <= k else 0)
+
     metrics = {
-        'mr': sum(ranks) / len(ranks),
-        'mrr': sum(1/r for r in ranks) / len(ranks),
+        'mr': (sum(ranks_left) + sum(ranks_right)) / (len(ranks_left) + len(ranks_right)),
+        'mrr': sum(1/r for r in ranks_left + ranks_right) / (len(ranks_left) + len(ranks_right)),
         'hits@1': sum(hits[1]) / len(hits[1]),
         'hits@3': sum(hits[3]) / len(hits[3]),
         'hits@10': sum(hits[10]) / len(hits[10])

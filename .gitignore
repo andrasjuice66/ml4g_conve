@@ -60,3 +60,7 @@ data/
 # Conda environment files
 *.conda
 *.lock
+
+
+
+notebooks/

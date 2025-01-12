@@ -25,10 +25,12 @@ class KGDataset(Dataset):
             for h, r, t in triples
         ]
         
-        # Create filters for negative sampling
-        self.filters = defaultdict(set)  # (head, rel) -> set of valid tails
+        # Create filters for both directions
+        self.filters_o = defaultdict(set)  # (head, rel) -> set of valid tails
+        self.filters_s = defaultdict(set)  # (rel, tail) -> set of valid heads
         for h, r, t in self.triple_indices:
-            self.filters[(h, r)].add(t)
+            self.filters_o[(h, r)].add(t)  # Forward direction
+            self.filters_s[(r, t)].add(h)  # Reverse direction
 
     def __len__(self):
         return len(self.triple_indices)
@@ -36,10 +38,11 @@ class KGDataset(Dataset):
     def __getitem__(self, idx):
         h, r, t = self.triple_indices[idx]
         return {
-            'subject': torch.LongTensor([h]),
-            'relation': torch.LongTensor([r]),
-            'object': torch.LongTensor([t]),
-            'filter_out': torch.LongTensor(list(self.filters[(h, r)]))
+            'subject': h,
+            'relation': r,
+            'object': t,
+            'filter_o': torch.LongTensor(list(self.filters_o[(h, r)])),
+            'filter_s': torch.LongTensor(list(self.filters_s[(r, t)]))
         }
 
 class KGDataLoader:
@@ -99,20 +102,28 @@ def create_dataloader(
 
 def _collate_fn(batch):
     """Custom collate function to handle variable-sized filter lists."""
-    subject = torch.cat([item['subject'] for item in batch])
-    relation = torch.cat([item['relation'] for item in batch])
-    object_ = torch.cat([item['object'] for item in batch])
+    # Convert indices to tensors here
+    subject = torch.tensor([item['subject'] for item in batch], dtype=torch.long)
+    relation = torch.tensor([item['relation'] for item in batch], dtype=torch.long)
+    object_ = torch.tensor([item['object'] for item in batch], dtype=torch.long)
     
-    # Handle filter_out separately since they might have different lengths
-    max_filter_size = max(item['filter_out'].size(0) for item in batch)
-    filter_out = torch.zeros(len(batch), max_filter_size, dtype=torch.long)
+    # Handle both filter types
+    max_filter_o_size = max(item['filter_o'].size(0) for item in batch)
+    max_filter_s_size = max(item['filter_s'].size(0) for item in batch)
+    
+    filter_o = torch.zeros(len(batch), max_filter_o_size, dtype=torch.long)
+    filter_s = torch.zeros(len(batch), max_filter_s_size, dtype=torch.long)
+    
     for i, item in enumerate(batch):
-        size = item['filter_out'].size(0)
-        filter_out[i, :size] = item['filter_out']
+        size_o = item['filter_o'].size(0)
+        size_s = item['filter_s'].size(0)
+        filter_o[i, :size_o] = item['filter_o']
+        filter_s[i, :size_s] = item['filter_s']
     
     return {
         'subject': subject,
         'relation': relation,
         'object': object_,
-        'filter_out': filter_out
+        'filter_o': filter_o,
+        'filter_s': filter_s
     }
