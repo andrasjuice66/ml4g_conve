@@ -5,58 +5,62 @@ from tqdm import tqdm
 from typing import Dict
 import torch.nn.functional as F
 import os
+import numpy as np
+
+
 
 @torch.no_grad()
 def evaluate(model, dataloader, device):
     model.eval()
-    ranks_left = []
-    ranks_right = []
-    hits = {1: [], 3: [], 10: []}
+    ranks = []
+    hits = {1: 0, 3: 0, 10: 0}
+    total_loss = 0
     
     for batch in tqdm(dataloader, desc="Evaluating"):
         subject = batch['subject'].to(device)
         relation = batch['relation'].to(device)
         object_true = batch['object'].to(device)
         filter_o = batch['filter_o'].to(device)
-        filter_s = batch['filter_s'].to(device)
         
-        # Forward direction (object corruption)
-        scores1 = model(subject, relation)
-        # Reverse direction (subject corruption) - use same relation
-        scores2 = model(object_true, relation)  # Using same relation, model handles direction
+        scores = model(subject, relation)  # shape (B, num_entities)
         
-        for idx, (s, r, o) in enumerate(zip(subject, relation, object_true)):
-            # Object corruption
-            mask1 = torch.ones_like(scores1[idx], dtype=torch.bool)
-            mask1[filter_o[idx]] = False  # Apply forward filters
-            mask1[o] = True
-            filtered_scores1 = scores1[idx].clone()
-            filtered_scores1[~mask1] = float('-inf')
-            rank1 = (filtered_scores1 >= filtered_scores1[o]).sum().item()
+        # Compute validation loss
+        n_entities = scores.size(1)
+        targets = torch.zeros_like(scores).to(device)
+        targets.scatter_(1, object_true.unsqueeze(1), 1)
+        targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)  # Using default label smoothing of 0.1
+        loss = F.binary_cross_entropy(scores, targets)
+        total_loss += loss.item()
+        
+        # Compute ranks
+        for i in range(scores.size(0)):
+            mask = torch.ones_like(scores[i], dtype=torch.bool)
+            # filter out all known positives except the current gold
+            mask[filter_o[i]] = False
+            mask[object_true[i]] = True
+            filtered_scores = scores[i].clone()
+            filtered_scores[~mask] = float('-inf')
             
-            # Subject corruption
-            mask2 = torch.ones_like(scores2[idx], dtype=torch.bool)
-            mask2[filter_s[idx]] = False  # Apply reverse filters
-            mask2[s] = True
-            filtered_scores2 = scores2[idx].clone()
-            filtered_scores2[~mask2] = float('-inf')
-            rank2 = (filtered_scores2 >= filtered_scores2[s]).sum().item()
-            
-            ranks_left.append(rank1)
-            ranks_right.append(rank2)
+            gold_score = filtered_scores[object_true[i]]
+            rank = (filtered_scores >= gold_score).sum().item()
+            ranks.append(rank)
             
             for k in hits.keys():
-                hits[k].append(1 if rank1 <= k else 0)
-                hits[k].append(1 if rank2 <= k else 0)
+                if rank <= k:
+                    hits[k] += 1
 
-    metrics = {
-        'mr': (sum(ranks_left) + sum(ranks_right)) / (len(ranks_left) + len(ranks_right)),
-        'mrr': sum(1/r for r in ranks_left + ranks_right) / (len(ranks_left) + len(ranks_right)),
-        'hits@1': sum(hits[1]) / len(hits[1]),
-        'hits@3': sum(hits[3]) / len(hits[3]),
-        'hits@10': sum(hits[10]) / len(hits[10])
-    }
+    mr = np.mean(ranks)
+    mrr = np.mean([1.0 / r for r in ranks])
+    total = len(ranks)
     
+    metrics = {
+        'mr': mr,
+        'mrr': mrr,
+        'hits@1': hits[1]/total,
+        'hits@3': hits[3]/total,
+        'hits@10': hits[10]/total,
+        'loss': total_loss / len(dataloader)  # Add average validation loss
+    }
     return metrics
 
 def train_conve(
@@ -68,8 +72,7 @@ def train_conve(
     device: str = "cuda",
     label_smoothing: float = 0.1,
     eval_every: int = 1,
-    save_path: str = "checkpoints"
-):
+    save_path: str = "checkpoints"):
     """Train the ConvE model."""
     
     # Create checkpoint directory if it doesn't exist
@@ -81,66 +84,14 @@ def train_conve(
     
     # Training loop
     best_mrr = 0
-    train_losses = []
-    valid_losses = []
-    
-    def compute_loss_stats(dataloader, prefix=""):
-        model.eval()
-        total_loss = 0
-        all_scores = []
-        all_targets = []
-        
-        with torch.no_grad():
-            for batch in dataloader:
-                # Move batch to device
-                subject = batch['subject'].to(device)
-                relation = batch['relation'].to(device)
-                obj = batch['object'].to(device)
-                
-                # Forward pass
-                scores = model(subject, relation)
-                
-                # Create target tensor with label smoothing
-                n_entities = scores.size(1)
-                targets = torch.zeros_like(scores).to(device)
-                targets.scatter_(1, obj.unsqueeze(1), 1)
-                targets = ((1.0 - label_smoothing) * targets) + (label_smoothing/n_entities)
-                
-                # Compute loss
-                loss = F.binary_cross_entropy(scores, targets)
-                total_loss += loss.item()
-                
-                all_scores.append(scores.cpu())
-                all_targets.append(targets.cpu())
-        
-        avg_loss = total_loss / len(dataloader)
-        all_scores = torch.cat(all_scores)
-        all_targets = torch.cat(all_targets)
-        
-        print(f"\n{prefix} Loss Statistics:")
-        print(f"Average Loss: {avg_loss:.6f}")
-        print(f"Scores - min: {all_scores.min():.4f}, max: {all_scores.max():.4f}, mean: {all_scores.mean():.4f}")
-        pos_scores = all_scores[all_targets > 0.5]
-        neg_scores = all_scores[all_targets < 0.5]
-        print(f"Positive scores - mean: {pos_scores.mean():.4f}, count: {len(pos_scores)}")
-        print(f"Negative scores - mean: {neg_scores.mean():.4f}, count: {len(neg_scores)}")
-        
-        return avg_loss
-    
-    # Compute initial losses
-    initial_train_loss = compute_loss_stats(train_dataloader, "Initial Training")
-    initial_valid_loss = compute_loss_stats(valid_dataloader, "Initial Validation")
-    
-    # Log initial metrics
-    wandb.log({
-        'epoch': 0,
-        'train_loss': initial_train_loss,
-        'valid_loss': initial_valid_loss,
-    })
+    all_losses = []
     
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
+        epoch_losses = []
+        train_ranks = []
+        train_hits = {1: 0, 3: 0, 10: 0}
         
         with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for batch in pbar:
@@ -166,25 +117,47 @@ def train_conve(
                 loss.backward()
                 optimizer.step()
                 
-                # Update progress bar
+                # Update progress bar and track losses
                 total_loss += loss.item()
+                epoch_losses.append(loss.item())
                 pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+                
+                # After computing loss, calculate training metrics
+                with torch.no_grad():
+                    for i in range(scores.size(0)):
+                        gold_score = scores[i, obj[i]]
+                        rank = (scores[i] >= gold_score).sum().item()
+                        train_ranks.append(rank)
+                        
+                        for k in train_hits.keys():
+                            if rank <= k:
+                                train_hits[k] += 1
+                
+        # Store average epoch loss
+        avg_epoch_loss = np.mean(epoch_losses)
+        all_losses.append(avg_epoch_loss)
         
-        # Calculate average training loss
-        avg_train_loss = total_loss / len(train_dataloader)
-        train_losses.append(avg_train_loss)
+        # Calculate training metrics
+        train_mr = np.mean(train_ranks)
+        train_mrr = np.mean([1.0 / r for r in train_ranks])
+        total_examples = len(train_ranks)
         
         # Evaluate on validation set
         if (epoch + 1) % eval_every == 0:
             metrics = evaluate(model, valid_dataloader, device)
-            valid_loss = compute_loss_stats(valid_dataloader)
-            valid_losses.append(valid_loss)
             
-            # Log metrics
+            # Update wandb logging to include training metrics
             wandb.log({
                 'epoch': epoch + 1,
-                'train_loss': avg_train_loss,
-                'valid_loss': valid_loss,
+                'train_loss': total_loss / len(train_dataloader),
+                'train_loss_smooth': avg_epoch_loss,
+                'train_loss_std': np.std(epoch_losses),
+                'train_mr': train_mr,
+                'train_mrr': train_mrr,
+                'train_hits@1': train_hits[1]/total_examples,
+                'train_hits@3': train_hits[3]/total_examples,
+                'train_hits@10': train_hits[10]/total_examples,
+                'valid_loss': metrics['loss'],
                 'valid_mr': metrics['mr'],
                 'valid_mrr': metrics['mrr'],
                 'valid_hits@1': metrics['hits@1'],
@@ -203,8 +176,15 @@ def train_conve(
                 }, f"{save_path}/best_model.pt")
             
             print(f"\nEpoch {epoch+1} Metrics:")
-            print(f"Training Loss: {avg_train_loss:.6f}")
-            print(f"Validation Loss: {valid_loss:.6f}")
+            print("Training:")
+            print(f"Loss: {total_loss / len(train_dataloader):.4f}")
+            print(f"MR: {train_mr:.1f}")
+            print(f"MRR: {train_mrr:.4f}")
+            print(f"Hits@1: {train_hits[1]/total_examples:.4f}")
+            print(f"Hits@3: {train_hits[3]/total_examples:.4f}")
+            print(f"Hits@10: {train_hits[10]/total_examples:.4f}")
+            print("\nValidation:")
+            print(f"Loss: {metrics['loss']:.4f}")
             print(f"MR: {metrics['mr']:.1f}")
             print(f"MRR: {metrics['mrr']:.4f}")
             print(f"Hits@1: {metrics['hits@1']:.4f}")

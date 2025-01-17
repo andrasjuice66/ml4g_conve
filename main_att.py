@@ -2,6 +2,8 @@ import torch
 from pathlib import Path
 import argparse
 from models.conve import ConvE
+from models.conve_deep import ConvE_Deep
+from models.conve_att import AttnConvE
 from utils.preprocess import KGDataLoader, create_dataloader
 from utils.train import train_conve, evaluate
 import wandb
@@ -14,20 +16,21 @@ def main(data_path, dataset='FB15k-237'):
     wandb_api_key = 'a15aa5a84ab821022d13f9aa3a59ec1770fe93a3'
     wandb.login(key=wandb_api_key)
 
-    run_name = f"conve_{dataset}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"attn_conve_{dataset}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     wandb.init(
         project="conve-kg",
         name=run_name,
-        config={  # Log hyperparameters here
+        config={
             "dataset": dataset,
             "embedding_dim": 200,
             "embedding_shape1": 20,
             "input_dropout": 0.2,
             "hidden_dropout": 0.3,
             "feature_map_dropout": 0.2,
+            "hidden_size": 9728,
             "num_epochs": 100,
             "batch_size": 128,
-            "learning_rate": 0.003,
+            "learning_rate": 0.0001,
             "label_smoothing": 0.1
         }
     )
@@ -46,16 +49,18 @@ def main(data_path, dataset='FB15k-237'):
     valid_loader = create_dataloader(datasets['valid'], batch_size=config.batch_size, shuffle=False)
     test_loader = create_dataloader(datasets['test'], batch_size=config.batch_size, shuffle=False)
 
-    # Initialize model
+    # Initialize model with all necessary parameters
     print("Initializing model...")
-    model = ConvE(
+    model = AttnConvE(
         num_entities=len(data_loader.entity2id),
         num_relations=len(data_loader.relation2id),
         embedding_dim=config.embedding_dim,
         embedding_shape1=config.embedding_shape1,
+        hidden_size=config.hidden_size,
         input_dropout=config.input_dropout,
         hidden_dropout=config.hidden_dropout,
         feature_map_dropout=config.feature_map_dropout,
+        use_bias=True
     ).to(device)
 
     # Training parameters
