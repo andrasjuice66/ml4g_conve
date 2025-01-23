@@ -42,7 +42,7 @@ class KGDataset(Dataset):
         }
 
 class KGDataLoader:
-    def __init__(self, data_dir: str):
+    def __init__( self, data_dir: str):
         self.data_dir = Path(data_dir)
         self.entity2id = {}
         self.relation2id = {}

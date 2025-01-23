@@ -94,14 +94,14 @@ class ConvE(nn.Module):
         x = torch.mm(x, self.emb_e.weight.transpose(1, 0))
         
         # Add bias term
-        x += self.b.expand_as(x)
+        x += self.b(x)
         
         # Final sigmoid
         pred = torch.sigmoid(x)
         
         return pred
 
-    def score_triple(self, e1, rel, e2):
-        """Convenience method for scoring a single triple."""
-        scores = self.forward(e1, rel)
-        return scores.gather(1, e2.view(-1, 1))
+    # def score_triple(self, e1, rel, e2):
+    #     """Convenience method for scoring a single triple."""
+    #     scores = self.forward(e1, rel)
+    #     return scores.gather(1, e2.view(-1, 1))

@@ -52,7 +52,7 @@ def evaluate(model, dataloader, device):
     mr = np.mean(ranks)
     mrr = np.mean([1.0 / r for r in ranks])
     total = len(ranks)
-    
+        
     metrics = {
         'mr': mr,
         'mrr': mrr,
