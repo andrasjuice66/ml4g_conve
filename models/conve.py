@@ -94,7 +94,7 @@ class ConvE(nn.Module):
         x = torch.mm(x, self.emb_e.weight.transpose(1, 0))
         
         # Add bias term
-        x += self.b(x)
+        x += self.b
         
         # Final sigmoid
         pred = torch.sigmoid(x)
