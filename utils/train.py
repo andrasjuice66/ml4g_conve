@@ -71,6 +71,7 @@ def train_conve(
     learning_rate: float = 0.001,
     device: str = "cuda",
     label_smoothing: float = 0.1,
+    num_neg_samples: int = 5,
     eval_every: int = 1,
     save_path: str = "checkpoints"):
     """Train the ConvE model."""
@@ -95,29 +96,64 @@ def train_conve(
         
         with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for batch in pbar:
-                # Move batch to device
                 subject = batch['subject'].to(device)
                 relation = batch['relation'].to(device)
                 obj = batch['object'].to(device)
+                filter_o = batch['filter_o'].to(device)
                 
-                # Forward pass
-                scores = model(subject, relation)
+                batch_size = subject.size(0)
                 
-                # Create target tensor with label smoothing
-                n_entities = scores.size(1)
-                targets = torch.zeros_like(scores).to(device)
-                targets.scatter_(1, obj.unsqueeze(1), 1)
-                targets = ((1.0 - label_smoothing) * targets) + (label_smoothing/n_entities)
+                # Forward pass to get all scores
+                scores = model(subject, relation)  # shape: [batch_size, num_entities]
                 
-                # Compute loss
-                loss = F.binary_cross_entropy(scores, targets)
+                # 1. Positive samples: actual triples
+                pos_scores = scores[torch.arange(batch_size), obj]  # shape: [batch_size]
+                
+                # 2. Generate negative samples by corrupting tails
+                # Create a mask for valid negative samples
+                neg_mask = torch.ones_like(scores, dtype=torch.bool)
+                
+                # For each example in batch, mask out all known positive tails
+                for i in range(batch_size):
+                    neg_mask[i][filter_o[i]] = False
+                    # Keep the positive example masked
+                    neg_mask[i][obj[i]] = False
+                
+                # Sample negative scores
+                neg_scores = scores[neg_mask].view(batch_size, -1)  # shape: [batch_size, num_neg]
+                
+                # If we want exactly num_neg_samples negatives per positive:
+                if neg_scores.size(1) > num_neg_samples:
+                    perm = torch.randperm(neg_scores.size(1))[:num_neg_samples]
+                    neg_scores = neg_scores[:, perm]
+                
+                # 3. Compute loss using margin ranking
+                # Expand positive scores to match negative scores shape
+                pos_scores = pos_scores.unsqueeze(1).expand_as(neg_scores)
+                
+                # Target: positive scores should be higher than negative scores
+                target = torch.ones_like(neg_scores)
+                
+                # Margin ranking loss
+                margin = 1.0
+                loss = F.margin_ranking_loss(
+                    pos_scores.view(-1),
+                    neg_scores.view(-1),
+                    target.view(-1),
+                    margin=margin,
+                    reduction='mean'
+                )
+                
+                # Optional: Add regularization
+                # reg_loss = 0.01 * (model.emb_e.weight.norm(2) + model.emb_rel.weight.norm(2))
+                # loss = loss + reg_loss
                 
                 # Backward pass
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 
-                # Update progress bar and track losses
+                # Update progress bar
                 total_loss += loss.item()
                 epoch_losses.append(loss.item())
                 pbar.set_postfix({'loss': f"{loss.item():.4f}"})

@@ -101,7 +101,3 @@ class ConvE(nn.Module):
         
         return pred
 
-    # def score_triple(self, e1, rel, e2):
-    #     """Convenience method for scoring a single triple."""
-    #     scores = self.forward(e1, rel)
-    #     return scores.gather(1, e2.view(-1, 1))
