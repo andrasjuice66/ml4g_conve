@@ -56,34 +56,28 @@ class KGDataLoader:
         all_triples = train_triples + valid_triples + test_triples
         self._build_vocab(all_triples)
 
-        # Extend each set with inverse triples
-        train_triples_ext = self._extend_with_inverse(train_triples)
-        valid_triples_ext = self._extend_with_inverse(valid_triples)
-        test_triples_ext  = self._extend_with_inverse(test_triples)
+        # Comment out inverse triple extension
+        # train_triples_ext = self._extend_with_inverse(train_triples)
+        # valid_triples_ext = self._extend_with_inverse(valid_triples)
+        # test_triples_ext  = self._extend_with_inverse(test_triples)
 
-        # Create dataset objects
+        # Create dataset objects with original triples
         return {
-            'train': KGDataset(train_triples_ext, self.entity2id, self.relation2id),
-            'valid': KGDataset(valid_triples_ext, self.entity2id, self.relation2id),
-            'test':  KGDataset(test_triples_ext,  self.entity2id, self.relation2id),
+            'train': KGDataset(train_triples, self.entity2id, self.relation2id),
+            'valid': KGDataset(valid_triples, self.entity2id, self.relation2id),
+            'test':  KGDataset(test_triples,  self.entity2id, self.relation2id),
         }
 
     def _build_vocab(self, triples: List[Tuple[str, str, str]]):
-        """Create entity2id and *extended* relation2id."""
+        """Create entity2id and relation2id without inverse relations."""
         entities = sorted(set(h for h, _, _ in triples) | set(t for _, _, t in triples))
-        base_relations = sorted(set(r for _, r, _ in triples))
+        relations = sorted(set(r for _, r, _ in triples))
 
         # Entities
         self.entity2id = {ent: idx for idx, ent in enumerate(entities)}
-
-        # Relations + inverse
-        self.relation2id = {}
-        for i, r in enumerate(base_relations):
-            self.relation2id[r] = i
-        offset = len(base_relations)
-        for i, r in enumerate(base_relations):
-            inv_r = r + "_inv"
-            self.relation2id[inv_r] = i + offset
+        
+        # Relations (without inverse)
+        self.relation2id = {rel: idx for idx, rel in enumerate(relations)}
 
     def _extend_with_inverse(self, triples: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
         extended = []
@@ -100,8 +94,6 @@ class KGDataLoader:
                 h, r, t = line.strip().split('\t')
                 triples.append((h, r, t))
         return triples
-
-
 
 def _collate_fn(batch):
     subject = torch.tensor([item['subject'] for item in batch], dtype=torch.long)
