@@ -136,40 +136,23 @@ def train_conve(
         train_hits = {1: 0, 3: 0, 10: 0}
         
         with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
-            for batch_idx, batch in enumerate(pbar):
+            for batch in pbar:
+                # Move batch to device
                 subject = batch['subject'].to(device)
                 relation = batch['relation'].to(device)
                 obj = batch['object'].to(device)
                 
+                # Forward pass
                 scores = model(subject, relation)
                 
-                # Debug prints for first batch of first epoch
-                if epoch == 0 and batch_idx == 0:
-                    print("\nTraining Debug:")
-                    print(f"Scores shape: {scores.shape}")
-                    print(f"Score range: [{scores.min():.4f}, {scores.max():.4f}]")
-                    print(f"Mean score: {scores.mean():.4f}")
-                
+                # Create target tensor with label smoothing
                 n_entities = scores.size(1)
                 targets = torch.zeros_like(scores).to(device)
                 targets.scatter_(1, obj.unsqueeze(1), 1)
                 targets = ((1.0 - label_smoothing) * targets) + (label_smoothing/n_entities)
                 
-                if epoch == 0 and batch_idx == 0:
-                    print(f"Target range: [{targets.min():.4f}, {targets.max():.4f}]")
-                    print(f"Num positive targets: {(targets > 0.5).sum()}")
-                    print(f"Target distribution: smooth={label_smoothing/n_entities:.6f}, positive={1-label_smoothing:.4f}")
-                
+                # Compute loss
                 loss = F.binary_cross_entropy(scores, targets)
-                
-                # Add detailed loss debugging
-                if epoch == 0 and (batch_idx == 0 or batch_idx == 1 or batch_idx % 500 == 0):
-                    print(f"\nBatch {batch_idx} Debug:")
-                    print(f"Loss: {loss.item():.6f}")
-                    print(f"Score stats - Min: {scores.min():.4f}, Max: {scores.max():.4f}, Mean: {scores.mean():.4f}")
-                    print(f"Num scores near 0 (<0.01): {(scores < 0.01).sum().item()}")
-                    print(f"Num scores near 1 (>0.99): {(scores > 0.99).sum().item()}")
-                    print(f"Gradient norm: {torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf')):.4f}")
                 
                 # Backward pass
                 optimizer.zero_grad()
@@ -179,14 +162,7 @@ def train_conve(
                 # Update progress bar and track losses
                 total_loss += loss.item()
                 epoch_losses.append(loss.item())
-                
-                # Update progress bar with more stats
-                pbar.set_postfix({
-                    'loss': f"{loss.item():.4f}",
-                    'avg_loss': f"{total_loss/(batch_idx+1):.4f}",
-                    'min_score': f"{scores.min().item():.4f}",
-                    'max_score': f"{scores.max().item():.4f}"
-                })
+                pbar.set_postfix({'loss': f"{loss.item():.4f}"})
                 
                 # After computing loss, calculate training metrics
                 with torch.no_grad():
