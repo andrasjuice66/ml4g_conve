@@ -17,9 +17,6 @@ def evaluate(model, dataloader, device):
     hits = {1: 0, 3: 0, 10: 0}
     total_loss = 0
     
-    # Set chunk size for entity scoring
-    chunk_size = 512  # Adjust this value based on your GPU memory
-    
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
         subject = batch['subject'].to(device)
         relation = batch['relation'].to(device)
@@ -29,25 +26,12 @@ def evaluate(model, dataloader, device):
         batch_size = subject.size(0)
         num_entities = model.emb_e.weight.size(0)
         
-        # Score objects in chunks
-        scores_o = []
-        for chunk_start in range(0, batch_size, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, batch_size)
-            chunk_scores = model(subject[chunk_start:chunk_end], relation[chunk_start:chunk_end])
-            scores_o.append(chunk_scores)
-        scores_o = torch.cat(scores_o, dim=0)
+        # Score all possible objects
+        scores_o = model(subject, relation)  # shape (batch_size, num_entities)
         
-        # Score subjects in chunks
-        scores_s = []
-        for chunk_start in range(0, batch_size, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, batch_size)
-            chunk_size_current = chunk_end - chunk_start
-            chunk_scores = model(
-                torch.arange(num_entities).to(device).unsqueeze(0).expand(chunk_size_current, -1),
-                relation[chunk_start:chunk_end].unsqueeze(1).expand(-1, num_entities)
-            )
-            scores_s.append(chunk_scores)
-        scores_s = torch.cat(scores_s, dim=0)
+        # Score all possible subjects
+        scores_s = model(torch.arange(num_entities).to(device).unsqueeze(0).expand(batch_size, -1),
+                        relation.unsqueeze(1).expand(-1, num_entities))
         
         # Compute validation loss
         targets = torch.zeros_like(scores_o).to(device)
@@ -55,7 +39,7 @@ def evaluate(model, dataloader, device):
         loss = F.binary_cross_entropy(scores_o, targets)
         total_loss += loss.item()
         
-        # Process object corruptions in chunks
+        # Compute ranks for object corruption
         for i in range(scores_o.size(0)):
             mask = torch.ones_like(scores_o[i], dtype=torch.bool)
             mask[filter_o[i]] = False
@@ -70,7 +54,7 @@ def evaluate(model, dataloader, device):
                 if rank <= k:
                     hits[k] += 1
         
-        # Process subject corruptions in chunks
+        # Compute ranks for subject corruption
         for i in range(scores_s.size(0)):
             mask = torch.ones_like(scores_s[i], dtype=torch.bool)
             mask[filter_o[i]] = False  # Use same filter for now
@@ -84,10 +68,6 @@ def evaluate(model, dataloader, device):
             for k in hits.keys():
                 if rank <= k:
                     hits[k] += 1
-        
-        # Clear cache periodically
-        if batch_idx % 10 == 0:
-            torch.cuda.empty_cache()
 
     # Calculate metrics as per paper
     all_ranks = ranks_s + ranks_o
@@ -136,23 +116,40 @@ def train_conve(
         train_hits = {1: 0, 3: 0, 10: 0}
         
         with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
-            for batch in pbar:
-                # Move batch to device
+            for batch_idx, batch in enumerate(pbar):
                 subject = batch['subject'].to(device)
                 relation = batch['relation'].to(device)
                 obj = batch['object'].to(device)
                 
-                # Forward pass
                 scores = model(subject, relation)
                 
-                # Create target tensor with label smoothing
+                # Debug prints for first batch of first epoch
+                if epoch == 0 and batch_idx == 0:
+                    print("\nTraining Debug:")
+                    print(f"Scores shape: {scores.shape}")
+                    print(f"Score range: [{scores.min():.4f}, {scores.max():.4f}]")
+                    print(f"Mean score: {scores.mean():.4f}")
+                
                 n_entities = scores.size(1)
                 targets = torch.zeros_like(scores).to(device)
                 targets.scatter_(1, obj.unsqueeze(1), 1)
                 targets = ((1.0 - label_smoothing) * targets) + (label_smoothing/n_entities)
                 
-                # Compute loss
+                if epoch == 0 and batch_idx == 0:
+                    print(f"Target range: [{targets.min():.4f}, {targets.max():.4f}]")
+                    print(f"Num positive targets: {(targets > 0.5).sum()}")
+                    print(f"Target distribution: smooth={label_smoothing/n_entities:.6f}, positive={1-label_smoothing:.4f}")
+                
                 loss = F.binary_cross_entropy(scores, targets)
+                
+                # Add detailed loss debugging
+                if epoch == 0 and (batch_idx == 0 or batch_idx == 1 or batch_idx % 500 == 0):
+                    print(f"\nBatch {batch_idx} Debug:")
+                    print(f"Loss: {loss.item():.6f}")
+                    print(f"Score stats - Min: {scores.min():.4f}, Max: {scores.max():.4f}, Mean: {scores.mean():.4f}")
+                    print(f"Num scores near 0 (<0.01): {(scores < 0.01).sum().item()}")
+                    print(f"Num scores near 1 (>0.99): {(scores > 0.99).sum().item()}")
+                    print(f"Gradient norm: {torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf')):.4f}")
                 
                 # Backward pass
                 optimizer.zero_grad()
@@ -162,7 +159,14 @@ def train_conve(
                 # Update progress bar and track losses
                 total_loss += loss.item()
                 epoch_losses.append(loss.item())
-                pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+                
+                # Update progress bar with more stats
+                pbar.set_postfix({
+                    'loss': f"{loss.item():.4f}",
+                    'avg_loss': f"{total_loss/(batch_idx+1):.4f}",
+                    'min_score': f"{scores.min().item():.4f}",
+                    'max_score': f"{scores.max().item():.4f}"
+                })
                 
                 # After computing loss, calculate training metrics
                 with torch.no_grad():

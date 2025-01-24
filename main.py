@@ -25,7 +25,7 @@ def main(data_path, dataset='FB15k-237'):
             "input_dropout": 0.2,
             "hidden_dropout": 0.3,
             "feature_map_dropout": 0.2,
-            "num_epochs": 1000,
+            "num_epochs": 100,
             "batch_size": 128,
             "learning_rate": 0.003,
             "label_smoothing": 0.1
