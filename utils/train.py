@@ -17,6 +17,9 @@ def evaluate(model, dataloader, device):
     hits = {1: 0, 3: 0, 10: 0}
     total_loss = 0
     
+    # Set chunk size for entity scoring
+    chunk_size = 512  # Adjust this value based on your GPU memory
+    
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
         subject = batch['subject'].to(device)
         relation = batch['relation'].to(device)
@@ -26,12 +29,25 @@ def evaluate(model, dataloader, device):
         batch_size = subject.size(0)
         num_entities = model.emb_e.weight.size(0)
         
-        # Score all possible objects
-        scores_o = model(subject, relation)  # shape (batch_size, num_entities)
+        # Score objects in chunks
+        scores_o = []
+        for chunk_start in range(0, batch_size, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, batch_size)
+            chunk_scores = model(subject[chunk_start:chunk_end], relation[chunk_start:chunk_end])
+            scores_o.append(chunk_scores)
+        scores_o = torch.cat(scores_o, dim=0)
         
-        # Score all possible subjects
-        scores_s = model(torch.arange(num_entities).to(device).unsqueeze(0).expand(batch_size, -1),
-                        relation.unsqueeze(1).expand(-1, num_entities))
+        # Score subjects in chunks
+        scores_s = []
+        for chunk_start in range(0, batch_size, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, batch_size)
+            chunk_size_current = chunk_end - chunk_start
+            chunk_scores = model(
+                torch.arange(num_entities).to(device).unsqueeze(0).expand(chunk_size_current, -1),
+                relation[chunk_start:chunk_end].unsqueeze(1).expand(-1, num_entities)
+            )
+            scores_s.append(chunk_scores)
+        scores_s = torch.cat(scores_s, dim=0)
         
         # Compute validation loss
         targets = torch.zeros_like(scores_o).to(device)
@@ -39,7 +55,7 @@ def evaluate(model, dataloader, device):
         loss = F.binary_cross_entropy(scores_o, targets)
         total_loss += loss.item()
         
-        # Compute ranks for object corruption
+        # Process object corruptions in chunks
         for i in range(scores_o.size(0)):
             mask = torch.ones_like(scores_o[i], dtype=torch.bool)
             mask[filter_o[i]] = False
@@ -54,7 +70,7 @@ def evaluate(model, dataloader, device):
                 if rank <= k:
                     hits[k] += 1
         
-        # Compute ranks for subject corruption
+        # Process subject corruptions in chunks
         for i in range(scores_s.size(0)):
             mask = torch.ones_like(scores_s[i], dtype=torch.bool)
             mask[filter_o[i]] = False  # Use same filter for now
@@ -68,6 +84,10 @@ def evaluate(model, dataloader, device):
             for k in hits.keys():
                 if rank <= k:
                     hits[k] += 1
+        
+        # Clear cache periodically
+        if batch_idx % 10 == 0:
+            torch.cuda.empty_cache()
 
     # Calculate metrics as per paper
     all_ranks = ranks_s + ranks_o
