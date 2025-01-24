@@ -52,16 +52,11 @@ class KGDataLoader:
         valid_triples = self._load_triples('valid.txt')
         test_triples  = self._load_triples('test.txt')
 
-        # Build base vocab on all original triples
+        # Build vocab on all original triples
         all_triples = train_triples + valid_triples + test_triples
         self._build_vocab(all_triples)
 
-        # Comment out inverse triple extension
-        # train_triples_ext = self._extend_with_inverse(train_triples)
-        # valid_triples_ext = self._extend_with_inverse(valid_triples)
-        # test_triples_ext  = self._extend_with_inverse(test_triples)
-
-        # Create dataset objects with original triples
+        # Create dataset objects (without inverse triples)
         return {
             'train': KGDataset(train_triples, self.entity2id, self.relation2id),
             'valid': KGDataset(valid_triples, self.entity2id, self.relation2id),
@@ -69,13 +64,12 @@ class KGDataLoader:
         }
 
     def _build_vocab(self, triples: List[Tuple[str, str, str]]):
-        """Create entity2id and relation2id without inverse relations."""
+        """Create entity2id and relation2id."""
         entities = sorted(set(h for h, _, _ in triples) | set(t for _, _, t in triples))
         relations = sorted(set(r for _, r, _ in triples))
 
         # Entities
         self.entity2id = {ent: idx for idx, ent in enumerate(entities)}
-        
         # Relations (without inverse)
         self.relation2id = {rel: idx for idx, rel in enumerate(relations)}
 
@@ -94,6 +88,8 @@ class KGDataLoader:
                 h, r, t = line.strip().split('\t')
                 triples.append((h, r, t))
         return triples
+
+
 
 def _collate_fn(batch):
     subject = torch.tensor([item['subject'] for item in batch], dtype=torch.long)

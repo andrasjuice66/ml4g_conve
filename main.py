@@ -62,7 +62,6 @@ def main(data_path, dataset='FB15k-237'):
     train_params = {
         'num_epochs': config.num_epochs,
         'learning_rate': config.learning_rate,
-        'label_smoothing': config.label_smoothing,
         'save_path': "checkpoints",
         'eval_every': 1  # Evaluate every epoch
     }
@@ -102,6 +101,8 @@ def main(data_path, dataset='FB15k-237'):
 if __name__ == "__main__":
     data_path = "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data/"
     #drive_path = "/content/drive/MyDrive/trainandtest/"
-    datasets = ['FB15k-237', 'WN18RR', 'YAGO3-10']
+    #datasets = ['FB15k-237', 'WN18RR', 'YAGO3-10']
+    datasets = ['WN18RR']
+
     for dataset in datasets:
         main(data_path,dataset)

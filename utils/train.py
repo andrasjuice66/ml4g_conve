@@ -12,68 +12,46 @@ import numpy as np
 @torch.no_grad()
 def evaluate(model, dataloader, device):
     model.eval()
-    ranks_s = []  # ranks when corrupting subject
-    ranks_o = []  # ranks when corrupting object
+    ranks = []
     hits = {1: 0, 3: 0, 10: 0}
     total_loss = 0
     
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
+    for batch in tqdm(dataloader, desc="Evaluating"):
         subject = batch['subject'].to(device)
         relation = batch['relation'].to(device)
         object_true = batch['object'].to(device)
         filter_o = batch['filter_o'].to(device)
         
-        batch_size = subject.size(0)
-        num_entities = model.emb_e.weight.size(0)
-        
-        # Score all possible objects
-        scores_o = model(subject, relation)  # shape (batch_size, num_entities)
-        
-        # Score all possible subjects
-        scores_s = model(torch.arange(num_entities).to(device).unsqueeze(0).expand(batch_size, -1),
-                        relation.unsqueeze(1).expand(-1, num_entities))
+        scores = model(subject, relation)  # shape (B, num_entities)
         
         # Compute validation loss
-        targets = torch.zeros_like(scores_o).to(device)
+        n_entities = scores.size(1)
+        targets = torch.zeros_like(scores).to(device)
         targets.scatter_(1, object_true.unsqueeze(1), 1)
-        loss = F.binary_cross_entropy(scores_o, targets)
+        targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)  # Using default label smoothing of 0.1
+        loss = F.binary_cross_entropy(scores, targets)
         total_loss += loss.item()
         
-        # Compute ranks for object corruption
-        for i in range(scores_o.size(0)):
-            mask = torch.ones_like(scores_o[i], dtype=torch.bool)
+        # Compute ranks
+        for i in range(scores.size(0)):
+            mask = torch.ones_like(scores[i], dtype=torch.bool)
+            # filter out all known positives except the current gold
             mask[filter_o[i]] = False
             mask[object_true[i]] = True
-            filtered_scores = scores_o[i].clone()
+            filtered_scores = scores[i].clone()
             filtered_scores[~mask] = float('-inf')
             
-            rank = (filtered_scores >= filtered_scores[object_true[i]]).sum().item()
-            ranks_o.append(rank)
-            
-            for k in hits.keys():
-                if rank <= k:
-                    hits[k] += 1
-        
-        # Compute ranks for subject corruption
-        for i in range(scores_s.size(0)):
-            mask = torch.ones_like(scores_s[i], dtype=torch.bool)
-            mask[filter_o[i]] = False  # Use same filter for now
-            mask[subject[i]] = True
-            filtered_scores = scores_s[i].clone()
-            filtered_scores[~mask] = float('-inf')
-            
-            rank = (filtered_scores >= filtered_scores[subject[i]]).sum().item()
-            ranks_s.append(rank)
+            gold_score = filtered_scores[object_true[i]]
+            rank = (filtered_scores >= gold_score).sum().item()
+            ranks.append(rank)
             
             for k in hits.keys():
                 if rank <= k:
                     hits[k] += 1
 
-    # Calculate metrics as per paper
-    all_ranks = ranks_s + ranks_o
-    mrr = np.mean([1.0 / r for r in all_ranks])
-    mr = np.mean(all_ranks)
-    total = len(all_ranks)
+    mr = np.mean(ranks)
+    mrr = np.mean([1.0 / r for r in ranks])
+    total = len(ranks)
         
     metrics = {
         'mr': mr,
@@ -81,7 +59,7 @@ def evaluate(model, dataloader, device):
         'hits@1': hits[1]/total,
         'hits@3': hits[3]/total,
         'hits@10': hits[10]/total,
-        'loss': total_loss / len(dataloader)
+        'loss': total_loss / len(dataloader)  # Add average validation loss
     }
     return metrics
 
@@ -92,7 +70,6 @@ def train_conve(
     num_epochs: int = 100,
     learning_rate: float = 0.001,
     device: str = "cuda",
-    label_smoothing: float = 0.1,
     eval_every: int = 1,
     save_path: str = "checkpoints"):
     """Train the ConvE model."""
@@ -104,105 +81,95 @@ def train_conve(
     model = model.to(device)
     optimizer = Adam(model.parameters(), lr=learning_rate)
     
+    # Print model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"\nTotal parameters: {total_params:,}")
+    print(f"Device being used: {device}")
+    print(f"Training samples per epoch: {len(train_dataloader.dataset):,}")
+    print(f"Validation samples: {len(valid_dataloader.dataset):,}")
+    
     # Training loop
     best_mrr = 0
-    all_losses = []
     
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
         epoch_losses = []
-        train_ranks = []
-        train_hits = {1: 0, 3: 0, 10: 0}
+        batch_scores = []  # Store prediction scores
         
         with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for batch_idx, batch in enumerate(pbar):
                 subject = batch['subject'].to(device)
                 relation = batch['relation'].to(device)
-                obj = batch['object'].to(device)
+                object_true = batch['object'].to(device)
                 
-                scores = model(subject, relation)
+                # Forward pass to get all scores
+                scores = model(subject, relation)  # shape: [batch_size, num_entities]
                 
                 # Debug prints for first batch of first epoch
                 if epoch == 0 and batch_idx == 0:
-                    print("\nTraining Debug:")
+                    print("\nFirst batch debug info:")
                     print(f"Scores shape: {scores.shape}")
                     print(f"Score range: [{scores.min():.4f}, {scores.max():.4f}]")
                     print(f"Mean score: {scores.mean():.4f}")
+                    batch_scores.append(scores.detach().cpu().numpy())
                 
+                # Binary Cross Entropy loss with label smoothing
                 n_entities = scores.size(1)
                 targets = torch.zeros_like(scores).to(device)
-                targets.scatter_(1, obj.unsqueeze(1), 1)
-                targets = ((1.0 - label_smoothing) * targets) + (label_smoothing/n_entities)
+                targets.scatter_(1, object_true.unsqueeze(1), 1)
+                targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)  # Label smoothing of 0.1
                 
                 if epoch == 0 and batch_idx == 0:
+                    print(f"Targets shape: {targets.shape}")
                     print(f"Target range: [{targets.min():.4f}, {targets.max():.4f}]")
-                    print(f"Num positive targets: {(targets > 0.5).sum()}")
-                    print(f"Target distribution: smooth={label_smoothing/n_entities:.6f}, positive={1-label_smoothing:.4f}")
+                    #print(f"Number of positive targets per row: {(targets == 0.9).sum(1).mean():.2f}")
                 
                 loss = F.binary_cross_entropy(scores, targets)
                 
-                # Add detailed loss debugging
-                if epoch == 0 and (batch_idx == 0 or batch_idx == 1 or batch_idx % 500 == 0):
-                    print(f"\nBatch {batch_idx} Debug:")
-                    print(f"Loss: {loss.item():.6f}")
-                    print(f"Score stats - Min: {scores.min():.4f}, Max: {scores.max():.4f}, Mean: {scores.mean():.4f}")
-                    print(f"Num scores near 0 (<0.01): {(scores < 0.01).sum().item()}")
-                    print(f"Num scores near 1 (>0.99): {(scores > 0.99).sum().item()}")
-                    print(f"Gradient norm: {torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf')):.4f}")
+                if epoch == 0 and batch_idx == 0:
+                    print(f"Initial loss: {loss.item():.4f}")
                 
                 # Backward pass
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 
-                # Update progress bar and track losses
+                # Update progress bar
                 total_loss += loss.item()
                 epoch_losses.append(loss.item())
                 
-                # Update progress bar with more stats
-                pbar.set_postfix({
-                    'loss': f"{loss.item():.4f}",
-                    'avg_loss': f"{total_loss/(batch_idx+1):.4f}",
-                    'min_score': f"{scores.min().item():.4f}",
-                    'max_score': f"{scores.max().item():.4f}"
-                })
-                
-                # After computing loss, calculate training metrics
-                with torch.no_grad():
-                    for i in range(scores.size(0)):
-                        gold_score = scores[i, obj[i]]
-                        rank = (scores[i] >= gold_score).sum().item()
-                        train_ranks.append(rank)
-                        
-                        for k in train_hits.keys():
-                            if rank <= k:
-                                train_hits[k] += 1
-                
-        # Store average epoch loss
-        avg_epoch_loss = np.mean(epoch_losses)
-        all_losses.append(avg_epoch_loss)
+                # Detailed metrics every 100 batches
+                if batch_idx % 100 == 0:
+                    current_mean_loss = np.mean(epoch_losses[-100:]) if len(epoch_losses) >= 100 else np.mean(epoch_losses)
+                    pbar.set_postfix({
+                        'loss': f"{loss.item():.4f}",
+                        'avg_loss_100': f"{current_mean_loss:.4f}"
+                    })
         
-        # Calculate training metrics
-        train_mr = np.mean(train_ranks)
-        train_mrr = np.mean([1.0 / r for r in train_ranks])
-        total_examples = len(train_ranks)
+        # Calculate average epoch loss
+        avg_epoch_loss = np.mean(epoch_losses)
+        print(f"\nEpoch {epoch+1} Training Statistics:")
+        print(f"Average Loss: {avg_epoch_loss:.4f}")
+        print(f"Loss Range: [{min(epoch_losses):.4f}, {max(epoch_losses):.4f}]")
         
         # Evaluate on validation set
         if (epoch + 1) % eval_every == 0:
             metrics = evaluate(model, valid_dataloader, device)
             
-            # Update wandb logging to include training metrics
+            print("\nValidation Statistics:")
+            print(f"Scores from first batch (mean/std): {np.mean(batch_scores):.4f}/{np.std(batch_scores):.4f}")
+            print(f"Loss: {metrics['loss']:.4f}")
+            print(f"MR: {metrics['mr']:.1f}")
+            print(f"MRR: {metrics['mrr']:.4f}")
+            print(f"Hits@1: {metrics['hits@1']:.4f}")
+            print(f"Hits@3: {metrics['hits@3']:.4f}")
+            print(f"Hits@10: {metrics['hits@10']:.4f}")
+            
+            # Log metrics
             wandb.log({
                 'epoch': epoch + 1,
-                'train_loss': total_loss / len(train_dataloader),
-                'train_loss_smooth': avg_epoch_loss,
-                'train_loss_std': np.std(epoch_losses),
-                'train_mr': train_mr,
-                'train_mrr': train_mrr,
-                'train_hits@1': train_hits[1]/total_examples,
-                'train_hits@3': train_hits[3]/total_examples,
-                'train_hits@10': train_hits[10]/total_examples,
+                'train_loss': avg_epoch_loss,
                 'valid_loss': metrics['loss'],
                 'valid_mr': metrics['mr'],
                 'valid_mrr': metrics['mrr'],
@@ -220,21 +187,6 @@ def train_conve(
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_mrr': best_mrr,
                 }, f"{save_path}/best_model.pt")
-            
-            print(f"\nEpoch {epoch+1} Metrics:")
-            print("Training:")
-            print(f"Loss: {total_loss / len(train_dataloader):.4f}")
-            print(f"MR: {train_mr:.1f}")
-            print(f"MRR: {train_mrr:.4f}")
-            print(f"Hits@1: {train_hits[1]/total_examples:.4f}")
-            print(f"Hits@3: {train_hits[3]/total_examples:.4f}")
-            print(f"Hits@10: {train_hits[10]/total_examples:.4f}")
-            print("\nValidation:")
-            print(f"Loss: {metrics['loss']:.4f}")
-            print(f"MR: {metrics['mr']:.1f}")
-            print(f"MRR: {metrics['mrr']:.4f}")
-            print(f"Hits@1: {metrics['hits@1']:.4f}")
-            print(f"Hits@3: {metrics['hits@3']:.4f}")
-            print(f"Hits@10: {metrics['hits@10']:.4f}")
+                print(f"\nNew best MRR: {best_mrr:.4f} - Saved model checkpoint")
     
     return model
