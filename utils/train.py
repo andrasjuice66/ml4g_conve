@@ -151,13 +151,7 @@ def train_conve(
                     targets = torch.zeros_like(scores, device=device)
                     targets.scatter_(1, object_true.unsqueeze(1), 1)
                     targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)
-                    pos_weight = torch.ones([1], device=device) * (n_entities - 1)
-                    loss = F.binary_cross_entropy_with_logits(
-                        scores, targets,
-                        pos_weight=pos_weight,
-                        reduction='mean'
-                    )
-                
+                    loss = F.binary_cross_entropy_with_logits(scores, targets)
                 # Backward pass with or without mixed precision
                 optimizer.zero_grad(set_to_none=True)
                 if device == "cuda":

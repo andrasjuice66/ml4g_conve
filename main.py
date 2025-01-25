@@ -33,20 +33,39 @@ def main(data_path, dataset='FB15k-237'):
     )
     config = wandb.config
 
-    # Set device
+    # Set device - force CUDA if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        print("WARNING: CUDA is not available. Running on CPU!")
+    else:
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
 
     # Load datasets
     print("Loading data...")
     data_loader = KGDataLoader(f"{data_path}{dataset}")
     datasets = data_loader.load_data()
 
-    # Create dataloaders
-    train_loader = create_dataloader(datasets['train'], batch_size=config.batch_size, shuffle=True)
-    valid_loader = create_dataloader(datasets['valid'], batch_size=config.batch_size, shuffle=False)
-    test_loader = create_dataloader(datasets['test'], batch_size=config.batch_size, shuffle=False)
+    # Create dataloaders with GPU-specific settings
+    train_loader = create_dataloader(
+        datasets['train'], 
+        batch_size=config.batch_size, 
+        shuffle=True,
+        pin_memory=torch.cuda.is_available()  # Only pin memory if CUDA is available
+    )
+    valid_loader = create_dataloader(
+        datasets['valid'], 
+        batch_size=config.batch_size, 
+        shuffle=False,
+        pin_memory=torch.cuda.is_available()
+    )
+    test_loader = create_dataloader(
+        datasets['test'], 
+        batch_size=config.batch_size, 
+        shuffle=False,
+        pin_memory=torch.cuda.is_available()
+    )
 
-    # Initialize model
+    # Initialize model and explicitly move to GPU
     print("Initializing model...")
     model = ConvE(
         num_entities=len(data_loader.entity2id),
@@ -56,7 +75,14 @@ def main(data_path, dataset='FB15k-237'):
         input_dropout=config.input_dropout,
         hidden_dropout=config.hidden_dropout,
         feature_map_dropout=config.feature_map_dropout,
-    ).to(device)
+    )
+    
+    # Force model to GPU
+    if torch.cuda.is_available():
+        model = model.cuda()
+        
+    # Verify model is on correct device
+    print(f"Model is on device: {next(model.parameters()).device}")
 
     # Training parameters
     train_params = {

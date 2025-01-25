@@ -17,8 +17,6 @@ venv/
 
 # Machine Learning outputs and logs
 logs/
-checkpoints/
-bestmodel.pth
 
 # Weights and Biases
 wandb/
@@ -61,6 +59,6 @@ data/
 *.conda
 *.lock
 
-
+best_model.pth
 
 notebooks/
