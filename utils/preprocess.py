@@ -111,4 +111,12 @@ def _collate_fn(batch):
     }
 
 def create_dataloader(dataset: KGDataset, batch_size: int, shuffle=True) -> DataLoader:
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn)
+    return DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=shuffle, 
+        collate_fn=_collate_fn,
+        pin_memory=True,  # Use pinned memory for faster GPU transfer
+        num_workers=2,    # Adjust based on your CPU cores
+        persistent_workers=True  # Keep workers alive between epochs
+    )

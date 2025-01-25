@@ -97,7 +97,7 @@ class ConvE(nn.Module):
         x += self.b
         
         # Final sigmoid
-        pred = torch.sigmoid(x)
+        #pred = torch.sigmoid(x)
         
-        return pred
+        return x
 

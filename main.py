@@ -102,7 +102,7 @@ if __name__ == "__main__":
     data_path = "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data/"
     #drive_path = "/content/drive/MyDrive/trainandtest/"
     #datasets = ['FB15k-237', 'WN18RR', 'YAGO3-10']
-    datasets = ['WN18RR']
+    datasets = ['WN18RR', 'FB15k-237']
 
     for dataset in datasets:
         main(data_path,dataset)
