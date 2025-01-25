@@ -42,45 +42,68 @@ class KGDataset(Dataset):
         }
 
 class KGDataLoader:
-    def __init__( self, data_dir: str):
+    def __init__(self, data_dir: str):
         self.data_dir = Path(data_dir)
         self.entity2id = {}
         self.relation2id = {}
 
     def load_data(self) -> Dict[str, KGDataset]:
+        # First load all triples
         train_triples = self._load_triples('train.txt')
         valid_triples = self._load_triples('valid.txt')
-        test_triples  = self._load_triples('test.txt')
+        test_triples = self._load_triples('test.txt')
 
-        # Build vocab on all original triples
-        all_triples = train_triples + valid_triples + test_triples
-        self._build_vocab(all_triples)
+        # Get entities and relations from training set only
+        train_entities = set(h for h, _, _ in train_triples) | set(t for _, _, t in train_triples)
+        train_relations = set(r for _, r, _ in train_triples)
 
-        # Create dataset objects (without inverse triples)
+        print(f"Original statistics:")
+        print(f"Train: {len(train_triples)} triples")
+        print(f"Valid: {len(valid_triples)} triples")
+        print(f"Test: {len(test_triples)} triples")
+
+        # Filter validation and test triples to only include training entities and relations
+        valid_triples = [
+            (h, r, t) for h, r, t in valid_triples 
+            if h in train_entities and t in train_entities and r in train_relations
+        ]
+        
+        test_triples = [
+            (h, r, t) for h, r, t in test_triples 
+            if h in train_entities and t in train_entities and r in train_relations
+        ]
+
+        print(f"\nAfter filtering (only training entities/relations):")
+        print(f"Train: {len(train_triples)} triples")
+        print(f"Valid: {len(valid_triples)} triples")
+        print(f"Test: {len(test_triples)} triples")
+
+        # Build vocab using only training entities and relations
+        self._build_vocab_from_training(train_entities, train_relations)
+
+        # Create dataset objects
         return {
             'train': KGDataset(train_triples, self.entity2id, self.relation2id),
             'valid': KGDataset(valid_triples, self.entity2id, self.relation2id),
-            'test':  KGDataset(test_triples,  self.entity2id, self.relation2id),
+            'test': KGDataset(test_triples, self.entity2id, self.relation2id),
         }
 
-    def _build_vocab(self, triples: List[Tuple[str, str, str]]):
-        """Create entity2id and relation2id."""
-        entities = sorted(set(h for h, _, _ in triples) | set(t for _, _, t in triples))
-        relations = sorted(set(r for _, r, _ in triples))
+    def _build_vocab_from_training(self, train_entities: Set[str], train_relations: Set[str]):
+        """Create entity2id and relation2id from training set only."""
+        # Sort for deterministic ordering
+        entities = sorted(train_entities)
+        relations = sorted(train_relations)
 
-        # Entities
+        # Create mappings
         self.entity2id = {ent: idx for idx, ent in enumerate(entities)}
-        # Relations (without inverse)
         self.relation2id = {rel: idx for idx, rel in enumerate(relations)}
 
-    def _extend_with_inverse(self, triples: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
-        extended = []
-        for h, r, t in triples:
-            extended.append((h, r, t))
-            extended.append((t, r + "_inv", h))  # inverse triple
-        return extended
+        print(f"\nVocabulary statistics:")
+        print(f"Number of entities: {len(self.entity2id)}")
+        print(f"Number of relations: {len(self.relation2id)}")
 
     def _load_triples(self, filename: str) -> List[Tuple[str, str, str]]:
+        """Load triples from file."""
         triples = []
         filepath = self.data_dir / filename
         with open(filepath) as f:
@@ -116,7 +139,7 @@ def create_dataloader(dataset: KGDataset, batch_size: int, shuffle=True) -> Data
         batch_size=batch_size, 
         shuffle=shuffle, 
         collate_fn=_collate_fn,
-        pin_memory=True,  # Use pinned memory for faster GPU transfer
-        num_workers=2,    # Adjust based on your CPU cores
-        persistent_workers=True  # Keep workers alive between epochs
-    )
+        pin_memory=True, 
+        num_workers=2,   
+            persistent_workers=True  
+        )

@@ -49,20 +49,17 @@ def main(data_path, dataset='FB15k-237'):
     train_loader = create_dataloader(
         datasets['train'], 
         batch_size=config.batch_size, 
-        shuffle=True,
-        pin_memory=torch.cuda.is_available()  # Only pin memory if CUDA is available
+        shuffle=True
     )
     valid_loader = create_dataloader(
         datasets['valid'], 
         batch_size=config.batch_size, 
-        shuffle=False,
-        pin_memory=torch.cuda.is_available()
+        shuffle=False
     )
     test_loader = create_dataloader(
         datasets['test'], 
         batch_size=config.batch_size, 
-        shuffle=False,
-        pin_memory=torch.cuda.is_available()
+        shuffle=False
     )
 
     # Initialize model and explicitly move to GPU

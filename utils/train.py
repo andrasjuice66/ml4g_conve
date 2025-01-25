@@ -139,6 +139,7 @@ def train_conve(
                         targets.scatter_(1, object_true.unsqueeze(1), 1)
                         targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)
                         loss = F.binary_cross_entropy_with_logits(scores, targets)
+                        
                 else:
                     # Standard forward pass for CPU
                     scores = model(subject, relation)
@@ -163,6 +164,8 @@ def train_conve(
                 # Update metrics
                 total_loss += loss.item()
                 epoch_losses.append(loss.item())
+                pbar.set_postfix({'loss': f'{loss:.4f}'})
+
         
         # Memory cleanup for CUDA
         if device == "cuda":
