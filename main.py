@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse
 from models.conve import ConvE
 from utils.preprocess import KGDataLoader, create_dataloader
-from utils.train import train_conve, evaluate
+from utils.train import train_conve, evaluate, evaluate_2pass
 import wandb
 import os
 import datetime
@@ -101,7 +101,7 @@ def main(data_path, dataset='FB15k-237'):
 
     # Final evaluation on test set
     print("\nEvaluating on test set...")
-    test_metrics = evaluate(model, test_loader, device)
+    test_metrics = evaluate_2pass(model, test_loader, device)
 
     # Log final test metrics
     wandb.log({

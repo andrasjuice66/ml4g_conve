@@ -100,4 +100,15 @@ class ConvE(nn.Module):
         #pred = torch.sigmoid(x)
         
         return x
+    
+    def forward_head(self, e2, rel):
+        """
+        A 'head-mode' forward pass: predicts the score of each possible 'head'
+        given (relation=rel, object=e2).
+        We can do this simply by re-using our 'forward' code, but swapping
+        what we call subject vs. object.
+        """
+        # In practice, we do the same steps but we feed e2 into self.emb_e
+        # as if it were e1. So essentially:
+        return self.forward(e2, rel)
 

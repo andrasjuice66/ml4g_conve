@@ -26,8 +26,10 @@ class KGDataset(Dataset):
         # Build filter dictionary for each (h, r)
         # so we can filter out all known positives when ranking
         self.filters_o = defaultdict(set)
+        self.filters_h = defaultdict(set)
         for h, r, t in self.triple_indices:
             self.filters_o[(h, r)].add(t)
+            self.filters_h[(r, t)].add(h)
 
     def __len__(self):
         return len(self.triple_indices)
@@ -38,7 +40,8 @@ class KGDataset(Dataset):
             'subject': h,
             'relation': r,
             'object': t,
-            'filter_o': torch.LongTensor(list(self.filters_o[(h, r)]))
+            'filter_o': torch.LongTensor(list(self.filters_o[(h, r)])),
+            'filter_h': torch.LongTensor(list(self.filters_h[(r, t)]))
         }
 
 class KGDataLoader:
@@ -72,6 +75,8 @@ class KGDataLoader:
             (h, r, t) for h, r, t in test_triples 
             if h in train_entities and t in train_entities and r in train_relations
         ]
+
+        all_triples = train_triples + valid_triples + test_triples
 
         print(f"\nAfter filtering (only training entities/relations):")
         print(f"Train: {len(train_triples)} triples")
@@ -118,19 +123,25 @@ def _collate_fn(batch):
     subject = torch.tensor([item['subject'] for item in batch], dtype=torch.long)
     relation = torch.tensor([item['relation'] for item in batch], dtype=torch.long)
     object_ = torch.tensor([item['object'] for item in batch], dtype=torch.long)
-    
-    max_filter_size = max(item['filter_o'].size(0) for item in batch)
-    filter_o = torch.zeros(len(batch), max_filter_size, dtype=torch.long)
-    
+
+    max_filter_size_o = max(item['filter_o'].size(0) for item in batch)
+    filter_o = torch.zeros(len(batch), max_filter_size_o, dtype=torch.long)
     for i, item in enumerate(batch):
         size_o = item['filter_o'].size(0)
         filter_o[i, :size_o] = item['filter_o']
+
+    max_filter_size_h = max(item['filter_h'].size(0) for item in batch)
+    filter_h = torch.zeros(len(batch), max_filter_size_h, dtype=torch.long)
+    for i, item in enumerate(batch):
+        size_h = item['filter_h'].size(0)
+        filter_h[i, :size_h] = item['filter_h']
 
     return {
         'subject': subject,
         'relation': relation,
         'object': object_,
-        'filter_o': filter_o
+        'filter_o': filter_o,
+        'filter_h': filter_h
     }
 
 def create_dataloader(dataset: KGDataset, batch_size: int, shuffle=True) -> DataLoader:

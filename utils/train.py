@@ -74,6 +74,113 @@ def evaluate(model, dataloader, device):
     
     return metrics
 
+
+@torch.no_grad()
+def evaluate_2pass(model, dataloader, device):
+    model.eval()
+
+    # We'll collect ranks from both head and tail passes together
+    ranks_all = []
+    hits_all = {1: 0, 3: 0, 10: 0}
+
+    # Utility to update ranks, hits@k
+    def update_ranks(filtered_scores, gold_idx, ranks_list, hits_dict):
+        gold_score = filtered_scores[gold_idx]
+        # rank = number of scores >= gold_score
+        rank = (filtered_scores >= gold_score).sum().item()
+        ranks_list.append(rank)
+        for k in hits_dict.keys():
+            if rank <= k:
+                hits_dict[k] += 1
+
+    total_loss = 0
+    for batch in tqdm(dataloader, desc="Evaluating Head+Tail"):
+        subject = batch['subject'].to(device)
+        relation = batch['relation'].to(device)
+        object_true = batch['object'].to(device)
+        filter_o = batch['filter_o'].to(device)
+        filter_h = batch['filter_h'].to(device)
+
+        # Compute tail prediction loss
+        scores_tail = model.forward(subject, relation)
+        n_entities = scores_tail.size(1)
+        targets_tail = torch.zeros_like(scores_tail).to(device)
+        targets_tail.scatter_(1, object_true.unsqueeze(1), 1)
+        targets_tail = ((1.0 - 0.1) * targets_tail) + (0.1/n_entities)
+        loss_tail = F.binary_cross_entropy_with_logits(scores_tail, targets_tail)
+
+        # Compute head prediction loss
+        scores_head = model.forward_head(object_true, relation)
+        targets_head = torch.zeros_like(scores_head).to(device)
+        targets_head.scatter_(1, subject.unsqueeze(1), 1)
+        targets_head = ((1.0 - 0.1) * targets_head) + (0.1/n_entities)
+        loss_head = F.binary_cross_entropy_with_logits(scores_head, targets_head)
+
+        # Average the losses
+        total_loss += (loss_tail.item() + loss_head.item()) / 2
+
+        # ===== Tail mode (like your existing code) =====
+        # shape = (B, num_entities)
+        scores_tail = scores_tail.clone()
+        batch_size, num_ents = scores_tail.size()
+
+        for i in range(batch_size):
+            # Zero out or -inf all known tails in 'filter_o[i]'
+            # except the true object at position object_true[i]
+            # We'll do the standard "filtered" approach:
+            mask = torch.ones(num_ents, dtype=torch.bool, device=device)
+            # filter out known positives
+            mask[filter_o[i]] = False
+            # re-include the gold tail
+            mask[object_true[i]] = True
+            # anything not in mask -> -inf
+            scores_tail[i][~mask] = float('-inf')
+
+        # Now compute ranks for each item i in the batch
+        for i in range(batch_size):
+            update_ranks(
+                scores_tail[i],
+                object_true[i].item(),
+                ranks_all,
+                hits_all
+            )
+
+        # ===== Head mode (the new step) =====
+        # shape = (B, num_entities)
+        scores_head = scores_head.clone()
+        for i in range(batch_size):
+            mask = torch.ones(num_ents, dtype=torch.bool, device=device)
+            mask[filter_h[i]] = False
+            # re-include the gold head
+            mask[subject[i]] = True
+            scores_head[i][~mask] = float('-inf')
+
+        for i in range(batch_size):
+            update_ranks(
+                scores_head[i],
+                subject[i].item(),
+                ranks_all,
+                hits_all
+            )
+
+    # Now compute "final" metrics over head+tail
+    mr = np.mean(ranks_all)
+    mrr = np.mean([1.0 / r for r in ranks_all])
+    hits_at_1 = hits_all[1] / len(ranks_all)
+    hits_at_3 = hits_all[3] / len(ranks_all)
+    hits_at_10 = hits_all[10] / len(ranks_all)
+
+    metrics = {
+        'mr': mr,
+        'mrr': mrr,
+        'hits@1': hits_at_1,
+        'hits@3': hits_at_3,
+        'hits@10': hits_at_10,
+        'loss': total_loss / len(dataloader)
+    }
+
+    return metrics
+
 def train_conve(
     model,
     train_dataloader,
@@ -184,7 +291,8 @@ def train_conve(
         if (epoch + 1) % 1 == 0:  # Evaluate every epoch
             model.eval()
             with torch.cuda.amp.autocast():  # Use mixed precision for evaluation too
-                metrics = evaluate(model, valid_dataloader, device)
+                #metrics = evaluate(model, valid_dataloader, device)
+                metrics = evaluate_2pass(model, valid_dataloader, device)
             
             print("\nValidation Statistics:")
             print(f"Loss: {metrics['loss']:.4f}")
