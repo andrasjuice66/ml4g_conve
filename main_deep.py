@@ -1,20 +1,26 @@
 import torch
 from pathlib import Path
 import argparse
-from models.conve import ConvE
+# Make sure you've placed your deeper model in models/conve_deep.py
+# or adjust the import path accordingly.
+from models.conve_deep import ConvEDeep
+
 from utils.preprocess import KGDataLoader, create_dataloader
 from utils.train import train_conve, evaluate, evaluate_2pass
+
 import wandb
 import os
 import datetime
 
 def main(data_path, dataset='FB15k-237'):
+    # End any previous W&B session
     wandb.finish()
-    # Initialize wandb
+
+    # Initialize wandb (use your own key or environment variable)
     wandb_api_key = 'a15aa5a84ab821022d13f9aa3a59ec1770fe93a3'
     wandb.login(key=wandb_api_key)
 
-    run_name = f"conve_{dataset}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"conve_deep_{dataset}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     wandb.init(
         project="conve-kg",
         name=run_name,
@@ -41,31 +47,19 @@ def main(data_path, dataset='FB15k-237'):
     else:
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
 
-    # Load datasets
+    # Load data
     print("Loading data...")
     data_loader = KGDataLoader(f"{data_path}{dataset}")
     datasets = data_loader.load_data()
 
-    # Create dataloaders with GPU-specific settings
-    train_loader = create_dataloader(
-        datasets['train'], 
-        batch_size=config.batch_size, 
-        shuffle=True
-    )
-    valid_loader = create_dataloader(
-        datasets['valid'], 
-        batch_size=config.batch_size, 
-        shuffle=False
-    )
-    test_loader = create_dataloader(
-        datasets['test'], 
-        batch_size=config.batch_size, 
-        shuffle=False
-    )
+    # Create dataloaders
+    train_loader = create_dataloader(datasets['train'], batch_size=config.batch_size, shuffle=True)
+    valid_loader = create_dataloader(datasets['valid'], batch_size=config.batch_size, shuffle=False)
+    test_loader = create_dataloader(datasets['test'], batch_size=config.batch_size, shuffle=False)
 
-    # Initialize model and explicitly move to GPU
-    print("Initializing model...")
-    model = ConvE(
+    # Initialize deeper ConvE model
+    print("Initializing deeper ConvE model...")
+    model = ConvEDeep(
         num_entities=len(data_loader.entity2id),
         num_relations=len(data_loader.relation2id),
         embedding_dim=config.embedding_dim,
@@ -75,12 +69,12 @@ def main(data_path, dataset='FB15k-237'):
         feature_map_dropout=config.feature_map_dropout,
         use_stacked_embeddings=config.use_stacked_embeddings
     )
-    
-    # Force model to GPU
+
+    # Move model to GPU if available
     if torch.cuda.is_available():
         model = model.cuda()
-        
-    # Verify model is on correct device
+
+    # Verify model is on the correct device
     print(f"Model is on device: {next(model.parameters()).device}")
 
     # Training parameters
@@ -91,21 +85,21 @@ def main(data_path, dataset='FB15k-237'):
         'eval_every': 1  # Evaluate every epoch
     }
 
-    # Train model
+    # Train the deeper model
     print("Starting training...")
     model = train_conve(
         model=model,
         train_dataloader=train_loader,
         valid_dataloader=valid_loader,
         device=device,
-        **train_params  
+        **train_params
     )
 
     # Final evaluation on test set
     print("\nEvaluating on test set...")
     test_metrics = evaluate_2pass(model, test_loader, device)
 
-    # Log final test metrics
+    # Log & report final metrics
     wandb.log({
         'test_mr': test_metrics['mr'],
         'test_mrr': test_metrics['mrr'],
@@ -125,9 +119,7 @@ def main(data_path, dataset='FB15k-237'):
 
 if __name__ == "__main__":
     data_path = "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data/"
-    #drive_path = "/content/drive/MyDrive/trainandtest/"
-    #datasets = ['FB15k-237', 'WN18RR', 'YAGO3-10']
-    datasets = ['WN18RR', 'FB15k-237']
+    datasets = ['WN18RR']
 
     for dataset in datasets:
-        main(data_path,dataset)
+        main(data_path, dataset)
