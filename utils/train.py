@@ -114,40 +114,48 @@ def train_conve(
         total_loss = 0
         epoch_losses = []
         
-        # CUDA synchronization only if using GPU
-        if device == "cuda":
-            torch.cuda.synchronize()
-        
         with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for batch_idx, batch in enumerate(pbar):
-                # CUDA-specific optimizations
-                if device == "cuda" and batch_idx + 1 < len(train_dataloader):
-                    torch.cuda.current_stream().wait_stream(torch.cuda.Stream())
-                
-                # Move batch to device
                 subject = batch['subject'].to(device, non_blocking=True if device=="cuda" else False)
                 relation = batch['relation'].to(device, non_blocking=True if device=="cuda" else False)
                 object_true = batch['object'].to(device, non_blocking=True if device=="cuda" else False)
+                filter_o = batch['filter_o'].to(device, non_blocking=True if device=="cuda" else False)  # Get filters
                 
-                # Training step with or without mixed precision
                 if device == "cuda":
                     with torch.cuda.amp.autocast():
-                        # Forward pass and loss computation
                         scores = model(subject, relation)
                         n_entities = scores.size(1)
-                        targets = torch.zeros_like(scores, device=device)
-                        targets.scatter_(1, object_true.unsqueeze(1), 1)
-                        targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)
-                        loss = F.binary_cross_entropy_with_logits(scores, targets)
                         
+                        # Create target tensor with filtered negatives
+                        targets = torch.zeros_like(scores, device=device)
+                        # Set all valid answers (including filtered ones) to 1
+                        for i in range(scores.size(0)):
+                            targets[i][filter_o[i]] = 1
+                        
+                        # Apply label smoothing only to real negatives
+                        neg_mask = targets == 0
+                        pos_mask = targets == 1
+                        targets = targets.clone()
+                        targets[neg_mask] = 0.1/n_entities
+                        targets[pos_mask] = 1.0 - 0.1
+                        
+                        loss = F.binary_cross_entropy_with_logits(scores, targets)
                 else:
-                    # Standard forward pass for CPU
+                    # CPU version (same logic)
                     scores = model(subject, relation)
                     n_entities = scores.size(1)
                     targets = torch.zeros_like(scores, device=device)
-                    targets.scatter_(1, object_true.unsqueeze(1), 1)
-                    targets = ((1.0 - 0.1) * targets) + (0.1/n_entities)
+                    for i in range(scores.size(0)):
+                        targets[i][filter_o[i]] = 1
+                    
+                    neg_mask = targets == 0
+                    pos_mask = targets == 1
+                    targets = targets.clone()
+                    targets[neg_mask] = 0.1/n_entities
+                    targets[pos_mask] = 1.0 - 0.1
+                    
                     loss = F.binary_cross_entropy_with_logits(scores, targets)
+                
                 # Backward pass with or without mixed precision
                 optimizer.zero_grad(set_to_none=True)
                 if device == "cuda":
@@ -163,8 +171,9 @@ def train_conve(
                 
                 # Update metrics
                 total_loss += loss.item()
+                current_loss = total_loss / (batch_idx + 1)
                 epoch_losses.append(loss.item())
-                pbar.set_postfix({'loss': f'{loss:.4f}'})
+                pbar.set_postfix({'loss': f'{current_loss:.4f}'})
 
         
         # Memory cleanup for CUDA
@@ -197,14 +206,14 @@ def train_conve(
                 'valid_hits@10': metrics['hits@10'],
             })
             
-            # Save best model (asynchronously)
-            if metrics['mrr'] > best_mrr:
-                best_mrr = metrics['mrr']
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'best_mrr': best_mrr,
-                }, f"checkpoints/best_model.pt", _use_new_zipfile_serialization=True)
+            # # Save best model (asynchronously)
+            # if metrics['mrr'] > best_mrr:
+            #     best_mrr = metrics['mrr']
+            #     torch.save({
+            #         'epoch': epoch,
+            #         'model_state_dict': model.state_dict(),
+            #         'optimizer_state_dict': optimizer.state_dict(),
+            #         'best_mrr': best_mrr,
+            #     }, f"checkpoints/best_model.pt", _use_new_zipfile_serialization=True)
     
     return model
