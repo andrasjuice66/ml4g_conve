@@ -8,107 +8,118 @@ class ConvE(nn.Module):
         num_entities: int,
         num_relations: int,
         embedding_dim: int = 200,
-        embedding_shape1: int = 20,  # for 2D reshaping
-        hidden_size: int = 9728,  # 32 * 19 * 16
+        embedding_shape1: int = 20,
+        use_stacked_embeddings: bool = False,  # New switch parameter
         input_dropout: float = 0.2,
         hidden_dropout: float = 0.3,
-        feature_map_dropout: float = 0.2,
-        use_bias: bool = True
+        feature_map_dropout: float = 0.2
     ):
         super().__init__()
         
-        # Calculate embedding shape2 based on embedding_dim and shape1
-        self.embedding_shape2 = embedding_dim // embedding_shape1
+        self.num_entities = num_entities
+        self.num_relations = num_relations
         self.embedding_dim = embedding_dim
         self.embedding_shape1 = embedding_shape1
+        self.embedding_shape2 = embedding_dim // embedding_shape1
+        self.use_stacked_embeddings = use_stacked_embeddings  # Store the switch
         
-        # Entity and relation embeddings with padding_idx=0
-        self.emb_e = nn.Embedding(num_entities, embedding_dim, padding_idx=0)
-        self.emb_rel = nn.Embedding(num_relations, embedding_dim, padding_idx=0)
+        # Embeddings
+        self.entity_embeddings = nn.Embedding(num_entities, embedding_dim)
+        self.relation_embeddings = nn.Embedding(num_relations, embedding_dim)
         
         # Dropout layers
-        self.inp_drop = nn.Dropout(input_dropout)
-        self.hidden_drop = nn.Dropout(hidden_dropout)
-        self.feature_map_drop = nn.Dropout2d(feature_map_dropout)
+        self.input_dropout = nn.Dropout(input_dropout)
+        self.hidden_dropout = nn.Dropout(hidden_dropout)
+        self.feature_map_dropout = nn.Dropout(feature_map_dropout)
         
-        # Convolution layer with exact settings from paper
-        self.conv1 = nn.Conv2d(1, 32, (3, 3), 1, 0, bias=use_bias)
+        # Convolution layer
+        self.conv2d = nn.Conv2d(1, 32, (3, 3), padding=1)
         
-        # Batch normalization layers
-        self.bn0 = nn.BatchNorm2d(1)
+        # Output layers
         self.bn1 = nn.BatchNorm2d(32)
         self.bn2 = nn.BatchNorm1d(embedding_dim)
-        
-        # Learnable bias for each entity
-        self.b = nn.Parameter(torch.zeros(num_entities))
-        
-        # Fully connected layer
-        self.fc = nn.Linear(hidden_size, embedding_dim)
+        fc_length = 32 * self.embedding_shape1 * self.embedding_shape2
+        self.fc = nn.Linear(fc_length, embedding_dim)
         
         # Initialize embeddings
-        self.init()
+        nn.init.xavier_normal_(self.entity_embeddings.weight)
+        nn.init.xavier_normal_(self.relation_embeddings.weight)
 
-    def init(self):
-        """Initialize embeddings like the original implementation."""
-        nn.init.xavier_normal_(self.emb_e.weight.data)
-        nn.init.xavier_normal_(self.emb_rel.weight.data)
+    def _reshape_embeddings(self, e1_embedded, rel_embedded):
+        if self.use_stacked_embeddings:
+            # Original stacked version
+            stacked_inputs = torch.stack([e1_embedded, rel_embedded], dim=1)
+            stacked_inputs = stacked_inputs.reshape(-1, 1, 2 * self.embedding_shape1, self.embedding_shape2)
+        else:
+            # New interleaved version
+            # Reshape both embeddings
+            e1 = e1_embedded.view(-1, self.embedding_shape1, self.embedding_shape2)
+            rel = rel_embedded.view(-1, self.embedding_shape1, self.embedding_shape2)
+            
+            # Interleave rows
+            interleaved = torch.zeros_like(e1.repeat(1, 2, 1))
+            interleaved[:, 0::2, :] = e1  # Even rows are entity
+            interleaved[:, 1::2, :] = rel  # Odd rows are relation
+            
+            # Add channel dimension
+            stacked_inputs = interleaved.unsqueeze(1)
+        
+        return stacked_inputs
 
-    def forward(self, e1, rel):
-        # Get and reshape embeddings
-        e1_embedded = self.emb_e(e1).view(-1, 1, self.embedding_shape1, self.embedding_shape2)
-        rel_embedded = self.emb_rel(rel).view(-1, 1, self.embedding_shape1, self.embedding_shape2)
+    def forward(self, subject_idx, relation_idx):
+        batch_size = subject_idx.size(0)
         
-        # Stack inputs along dimension 2 (height)
-        stacked_inputs = torch.cat([e1_embedded, rel_embedded], 2)
+        # Get embeddings
+        subject_embedded = self.entity_embeddings(subject_idx).view(-1, self.embedding_dim)
+        relation_embedded = self.relation_embeddings(relation_idx).view(-1, self.embedding_dim)
         
-        # First batch norm
-        stacked_inputs = self.bn0(stacked_inputs)
+        # Reshape based on chosen method
+        stacked_inputs = self._reshape_embeddings(subject_embedded, relation_embedded)
         
-        # Input dropout
-        x = self.inp_drop(stacked_inputs)
+        # Apply input dropout
+        stacked_inputs = self.input_dropout(stacked_inputs)
         
         # Convolution
-        x = self.conv1(x)
-        
-        # Batch norm and activation
+        x = self.conv2d(stacked_inputs)
         x = self.bn1(x)
         x = F.relu(x)
+        x = self.feature_map_dropout(x)
         
-        # Feature map dropout
-        x = self.feature_map_drop(x)
-        
-        # Reshape for fully connected layer
-        x = x.view(x.shape[0], -1)
-        
-        # Fully connected layer
+        # Fully connected layers
+        x = x.view(batch_size, -1)
         x = self.fc(x)
-        
-        # Hidden dropout
-        x = self.hidden_drop(x)
-        
-        # Final batch norm and activation
+        x = self.hidden_dropout(x)
         x = self.bn2(x)
         x = F.relu(x)
         
-        # Score against all entities
-        x = torch.mm(x, self.emb_e.weight.transpose(1, 0))
-        
-        # Add bias term
-        x += self.b
-        
-        # Final sigmoid
-        #pred = torch.sigmoid(x)
+        # Score computation
+        x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
         
         return x
-    
-    def forward_head(self, e2, rel):
-        """
-        A 'head-mode' forward pass: predicts the score of each possible 'head'
-        given (relation=rel, object=e2).
-        We can do this simply by re-using our 'forward' code, but swapping
-        what we call subject vs. object.
-        """
-        # In practice, we do the same steps but we feed e2 into self.emb_e
-        # as if it were e1. So essentially:
-        return self.forward(e2, rel)
+
+    def forward_head(self, tail_idx, relation_idx):
+        # Similar to forward but for head prediction
+        batch_size = tail_idx.size(0)
+        
+        # Get embeddings
+        tail_embedded = self.entity_embeddings(tail_idx).view(-1, self.embedding_dim)
+        relation_embedded = self.relation_embeddings(relation_idx).view(-1, self.embedding_dim)
+        
+        # Reshape based on chosen method
+        stacked_inputs = self._reshape_embeddings(tail_embedded, relation_embedded)
+        
+        # Rest of the forward pass is the same
+        stacked_inputs = self.input_dropout(stacked_inputs)
+        x = self.conv2d(stacked_inputs)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.feature_map_dropout(x)
+        x = x.view(batch_size, -1)
+        x = self.fc(x)
+        x = self.hidden_dropout(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
+        
+        return x
 
