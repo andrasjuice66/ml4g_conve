@@ -9,7 +9,7 @@ class ConvE(nn.Module):
         num_relations: int,
         embedding_dim: int = 200,
         embedding_shape1: int = 20,
-        use_stacked_embeddings: bool = False,  # New switch parameter
+        use_stacked_embeddings: bool = True,
         input_dropout: float = 0.2,
         hidden_dropout: float = 0.3,
         feature_map_dropout: float = 0.2
@@ -21,7 +21,7 @@ class ConvE(nn.Module):
         self.embedding_dim = embedding_dim
         self.embedding_shape1 = embedding_shape1
         self.embedding_shape2 = embedding_dim // embedding_shape1
-        self.use_stacked_embeddings = use_stacked_embeddings  # Store the switch
+        self.use_stacked_embeddings = use_stacked_embeddings
         
         # Embeddings
         self.entity_embeddings = nn.Embedding(num_entities, embedding_dim)
@@ -35,10 +35,18 @@ class ConvE(nn.Module):
         # Convolution layer
         self.conv2d = nn.Conv2d(1, 32, (3, 3), padding=1)
         
+        # Calculate the size after convolution
+        if use_stacked_embeddings:
+            conv_output_height = 2 * self.embedding_shape1  # Stacked version
+        else:
+            conv_output_height = 2 * self.embedding_shape1  # Interleaved version
+            
+        conv_output_width = self.embedding_shape2
+        
         # Output layers
         self.bn1 = nn.BatchNorm2d(32)
         self.bn2 = nn.BatchNorm1d(embedding_dim)
-        fc_length = 32 * self.embedding_shape1 * self.embedding_shape2
+        fc_length = 32 * conv_output_height * conv_output_width
         self.fc = nn.Linear(fc_length, embedding_dim)
         
         # Initialize embeddings
@@ -86,7 +94,7 @@ class ConvE(nn.Module):
         x = self.feature_map_dropout(x)
         
         # Fully connected layers
-        x = x.view(batch_size, -1)
+        x = x.view(batch_size, -1)  # Flatten preserving batch size
         x = self.fc(x)
         x = self.hidden_dropout(x)
         x = self.bn2(x)
