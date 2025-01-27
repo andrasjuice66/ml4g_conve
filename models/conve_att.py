@@ -2,7 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ConvEWithAttention(nn.Module):
+class AttnConvE(nn.Module):
+    """ConvE model with multi-head self-attention mechanism for knowledge graph link prediction.
+    
+    Extends the base ConvE model by adding a self-attention layer to capture dependencies
+    between entity and relation embeddings before the convolution operation.
+    """
     def __init__(
         self,
         num_entities: int,
@@ -10,22 +15,23 @@ class ConvEWithAttention(nn.Module):
         embedding_dim: int = 200,
         embedding_shape1: int = 20,
         num_attention_heads: int = 8,
-        hidden_size: int = 9728,
+        use_stacked_embeddings: bool = True,
         input_dropout: float = 0.2,
         hidden_dropout: float = 0.3,
-        feature_map_dropout: float = 0.2,
-        use_bias: bool = True
+        feature_map_dropout: float = 0.2
     ):
         super().__init__()
-
-        # Calculate embedding shape2 based on embedding_dim and shape1
-        self.embedding_shape2 = embedding_dim // embedding_shape1
+        
+        self.num_entities = num_entities
+        self.num_relations = num_relations
         self.embedding_dim = embedding_dim
         self.embedding_shape1 = embedding_shape1
+        self.embedding_shape2 = embedding_dim // embedding_shape1
+        self.use_stacked_embeddings = use_stacked_embeddings
 
-        # Entity and relation embeddings
-        self.emb_e = nn.Embedding(num_entities, embedding_dim, padding_idx=0)
-        self.emb_rel = nn.Embedding(num_relations, embedding_dim, padding_idx=0)
+        # Embeddings
+        self.entity_embeddings = nn.Embedding(num_entities, embedding_dim)
+        self.relation_embeddings = nn.Embedding(num_relations, embedding_dim)
 
         # Self-attention layer
         self.self_attn = nn.MultiheadAttention(
@@ -35,78 +41,125 @@ class ConvEWithAttention(nn.Module):
         )
 
         # Dropout layers
-        self.inp_drop = nn.Dropout(input_dropout)
-        self.hidden_drop = nn.Dropout(hidden_dropout)
-        self.feature_map_drop = nn.Dropout2d(feature_map_dropout)
-        self.attn_drop = nn.Dropout(input_dropout)
+        self.input_dropout = nn.Dropout(input_dropout)
+        self.hidden_dropout = nn.Dropout(hidden_dropout)
+        self.feature_map_dropout = nn.Dropout(feature_map_dropout)
+        self.attn_dropout = nn.Dropout(input_dropout)
 
         # Convolution layer
-        self.conv1 = nn.Conv2d(1, 32, (3, 3), 1, 0, bias=use_bias)
+        self.conv2d = nn.Conv2d(1, 32, (3, 3), padding=1)
 
-        # Batch normalization layers
-        self.bn0 = nn.BatchNorm2d(1)
+        # Calculate the size after convolution
+        if use_stacked_embeddings:
+            conv_output_height = 2 * self.embedding_shape1
+        else:
+            conv_output_height = 2 * self.embedding_shape1
+            
+        conv_output_width = self.embedding_shape2
+        
+        # Output layers
         self.bn1 = nn.BatchNorm2d(32)
         self.bn2 = nn.BatchNorm1d(embedding_dim)
+        fc_length = 32 * conv_output_height * conv_output_width
+        self.fc = nn.Linear(fc_length, embedding_dim)
 
-        # Learnable bias and FC layer
-        self.b = nn.Parameter(torch.zeros(num_entities))
-        self.fc = nn.Linear(hidden_size, embedding_dim)
+        # Initialize embeddings
+        nn.init.xavier_normal_(self.entity_embeddings.weight)
+        nn.init.xavier_normal_(self.relation_embeddings.weight)
 
-        self.init()
+    def _reshape_embeddings(self, e1_embedded, rel_embedded):
+        """Reshape embeddings after attention for convolution input."""
+        if self.use_stacked_embeddings:
+            stacked_inputs = torch.stack([e1_embedded, rel_embedded], dim=1)
+            stacked_inputs = stacked_inputs.reshape(-1, 1, 2 * self.embedding_shape1, self.embedding_shape2)
+        else:
+            e1 = e1_embedded.view(-1, self.embedding_shape1, self.embedding_shape2)
+            rel = rel_embedded.view(-1, self.embedding_shape1, self.embedding_shape2)
+            
+            interleaved = torch.zeros_like(e1.repeat(1, 2, 1))
+            interleaved[:, 0::2, :] = e1
+            interleaved[:, 1::2, :] = rel
+            
+            stacked_inputs = interleaved.unsqueeze(1)
+        
+        return stacked_inputs
 
-    def init(self):
-        """Initialize embeddings using Xavier normalization"""
-        nn.init.xavier_normal_(self.emb_e.weight.data)
-        nn.init.xavier_normal_(self.emb_rel.weight.data)
-
-    def forward(self, e1, rel):
-        # Get raw embeddings
-        e1_emb = self.emb_e(e1)
-        rel_emb = self.emb_rel(rel)
-
-        # ========== Self-Attention Branch ==========
-        # Combine entity and relation embeddings
-        combined = torch.stack([e1_emb, rel_emb], dim=1)  # [batch_size, 2, embed_dim]
-
-        # Reformat for multi-head attention (seq_len, batch_size, embed_dim)
-        combined = combined.permute(1, 0, 2)
+    def forward(self, subject_idx, relation_idx):
+        """Forward pass for tail prediction."""
+        batch_size = subject_idx.size(0)
+        
+        # Get embeddings
+        subject_embedded = self.entity_embeddings(subject_idx).view(-1, self.embedding_dim)
+        relation_embedded = self.relation_embeddings(relation_idx).view(-1, self.embedding_dim)
 
         # Apply self-attention
+        combined = torch.stack([subject_embedded, relation_embedded], dim=1)
+        combined = combined.permute(1, 0, 2)
         attn_output, _ = self.self_attn(combined, combined, combined)
-        attn_output = attn_output.permute(1, 0, 2)  # [batch_size, 2, embed_dim]
-        attn_output = self.attn_drop(attn_output)
+        attn_output = attn_output.permute(1, 0, 2)
+        attn_output = self.attn_dropout(attn_output)
 
-        # Split attended embeddings
-        e1_attn = attn_output[:, 0, :]
-        rel_attn = attn_output[:, 1, :]
+        # Extract attended embeddings
+        subject_attended = attn_output[:, 0, :]
+        relation_attended = attn_output[:, 1, :]
 
-        # ========== Convolution Branch ==========
-        # Reshape attended embeddings for convolution
-        e1_reshaped = e1_attn.view(-1, 1, self.embedding_shape1, self.embedding_shape2)
-        rel_reshaped = rel_attn.view(-1, 1, self.embedding_shape1, self.embedding_shape2)
-
-        # Stack along height dimension
-        stacked_inputs = torch.cat([e1_reshaped, rel_reshaped], 2)
-
-        # Batch normalization and dropout
-        x = self.bn0(stacked_inputs)
-        x = self.inp_drop(x)
-
-        # Convolution operations
-        x = self.conv1(x)
+        # Reshape for convolution
+        stacked_inputs = self._reshape_embeddings(subject_attended, relation_attended)
+        
+        # Apply input dropout
+        stacked_inputs = self.input_dropout(stacked_inputs)
+        
+        # Convolution
+        x = self.conv2d(stacked_inputs)
         x = self.bn1(x)
         x = F.relu(x)
-        x = self.feature_map_drop(x)
-
-        # Prepare for final scoring
-        x = x.view(x.shape[0], -1)
+        x = self.feature_map_dropout(x)
+        
+        # Fully connected layers
+        x = x.view(batch_size, -1)
         x = self.fc(x)
-        x = self.hidden_drop(x)
+        x = self.hidden_dropout(x)
         x = self.bn2(x)
         x = F.relu(x)
+        
+        # Score computation
+        x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
+        
+        return x
 
-        # Score against all entities
-        x = torch.mm(x, self.emb_e.weight.transpose(1, 0))
-        x += self.b
+    def forward_head(self, tail_idx, relation_idx):
+        """Forward pass for head prediction."""
+        batch_size = tail_idx.size(0)
+        
+        # Get embeddings
+        tail_embedded = self.entity_embeddings(tail_idx).view(-1, self.embedding_dim)
+        relation_embedded = self.relation_embeddings(relation_idx).view(-1, self.embedding_dim)
 
+        # Apply self-attention
+        combined = torch.stack([tail_embedded, relation_embedded], dim=1)
+        combined = combined.permute(1, 0, 2)
+        attn_output, _ = self.self_attn(combined, combined, combined)
+        attn_output = attn_output.permute(1, 0, 2)
+        attn_output = self.attn_dropout(attn_output)
+
+        # Extract attended embeddings
+        tail_attended = attn_output[:, 0, :]
+        relation_attended = attn_output[:, 1, :]
+
+        # Reshape for convolution
+        stacked_inputs = self._reshape_embeddings(tail_attended, relation_attended)
+        
+        # Rest of the forward pass is the same
+        stacked_inputs = self.input_dropout(stacked_inputs)
+        x = self.conv2d(stacked_inputs)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.feature_map_dropout(x)
+        x = x.view(batch_size, -1)
+        x = self.fc(x)
+        x = self.hidden_dropout(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
+        
         return x

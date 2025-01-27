@@ -31,7 +31,8 @@ def main(data_path, dataset='FB15k-237'):
             "num_epochs": 100,
             "batch_size": 128,
             "learning_rate": 0.0001,
-            "label_smoothing": 0.1
+            "label_smoothing": 0.1,
+            "use_stacked_embeddings": True
         }
     )
     config = wandb.config
@@ -60,7 +61,9 @@ def main(data_path, dataset='FB15k-237'):
         input_dropout=config.input_dropout,
         hidden_dropout=config.hidden_dropout,
         feature_map_dropout=config.feature_map_dropout,
-        use_bias=True
+        use_bias=True,
+        use_stacked_embeddings=config.use_stacked_embeddings
+
     ).to(device)
 
     # Training parameters
