@@ -18,7 +18,7 @@ def main(data_path, dataset='FB15k-237'):
     wandb.init(
         project="conve-kg",
         name=run_name,
-        config={  # Log hyperparameters here
+        config={
             "dataset": dataset,
             "embedding_dim": 200,
             "embedding_shape1": 20,
@@ -34,36 +34,23 @@ def main(data_path, dataset='FB15k-237'):
     )
     config = wandb.config
 
-    # Set device - force CUDA if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Select device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if not torch.cuda.is_available():
-        print("WARNING: CUDA is not available. Running on CPU!")
+        print("WARNING: CUDA is not available. Running on CPU.")
     else:
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
 
-    # Load datasets
+    # Load data
     print("Loading data...")
     data_loader = KGDataLoader(f"{data_path}{dataset}")
     datasets = data_loader.load_data()
 
-    # Create dataloaders with GPU-specific settings
-    train_loader = create_dataloader(
-        datasets['train'], 
-        batch_size=config.batch_size, 
-        shuffle=True
-    )
-    valid_loader = create_dataloader(
-        datasets['valid'], 
-        batch_size=config.batch_size, 
-        shuffle=False
-    )
-    test_loader = create_dataloader(
-        datasets['test'], 
-        batch_size=config.batch_size, 
-        shuffle=False
-    )
+    train_loader = create_dataloader(datasets['train'], batch_size=config.batch_size, shuffle=True)
+    valid_loader = create_dataloader(datasets['valid'], batch_size=config.batch_size, shuffle=False)
+    test_loader = create_dataloader(datasets['test'],  batch_size=config.batch_size, shuffle=False)
 
-    # Initialize model and explicitly move to GPU
+    # Initialize model
     print("Initializing model...")
     model = ConvE(
         num_entities=len(data_loader.entity2id),
@@ -75,37 +62,24 @@ def main(data_path, dataset='FB15k-237'):
         feature_map_dropout=config.feature_map_dropout,
         use_stacked_embeddings=config.use_stacked_embeddings
     )
-    
-    # Force model to GPU
-    if torch.cuda.is_available():
-        model = model.cuda()
-        
-    # Verify model is on correct device
-    print(f"Model is on device: {next(model.parameters()).device}")
+    model = model.to(device)
 
-    # Training parameters
-    train_params = {
-        'num_epochs': config.num_epochs,
-        'learning_rate': config.learning_rate,
-        'save_path': "checkpoints",
-        'eval_every': 1  # Evaluate every epoch
-    }
-
-    # Train model
+    # Train
     print("Starting training...")
     model = train_conve(
         model=model,
         train_dataloader=train_loader,
         valid_dataloader=valid_loader,
+        num_epochs=config.num_epochs,
+        learning_rate=config.learning_rate,
         device=device,
-        **train_params  
+        eval_every=1,
+        save_path="checkpoints"
     )
 
-    # Final evaluation on test set
+    # Final test evaluation
     print("\nEvaluating on test set...")
     test_metrics = evaluate_2pass(model, test_loader, device)
-
-    # Log final test metrics
     wandb.log({
         'test_mr': test_metrics['mr'],
         'test_mrr': test_metrics['mrr'],
@@ -125,9 +99,7 @@ def main(data_path, dataset='FB15k-237'):
 
 if __name__ == "__main__":
     data_path = "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data/"
-    #drive_path = "/content/drive/MyDrive/trainandtest/"
-    #datasets = ['FB15k-237', 'WN18RR', 'YAGO3-10']
     datasets = ['WN18RR', 'FB15k-237']
 
-    for dataset in datasets:
-        main(data_path,dataset)
+    for ds in datasets:
+        main(data_path, ds)
