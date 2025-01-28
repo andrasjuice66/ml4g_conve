@@ -82,20 +82,26 @@ def evaluate(model, dataloader, device):
 def evaluate_2pass(model, dataloader, device):
     """
     Two-pass evaluator: tail and head prediction.
-    For each sample, we do:
-      1) Tail mode: fix (h, r), predict t
-      2) Head mode: fix (r, t), predict h
-    Then compute combined ranks/hits.
-    This can be closer to the standard "raw/filtered" link prediction metrics in KGE research.
     """
     model.eval()
     ranks_all = []
     hits_all = {1: 0, 3: 0, 10: 0}
     total_loss = 0
 
-    def update_ranks(filtered_scores, gold_idx, ranks_list, hits_dict):
-        gold_score = filtered_scores[gold_idx]
-        rank = (filtered_scores >= gold_score).sum().item()
+    def update_ranks(scores, true_idx, filter_idx, ranks_list, hits_dict):
+        # Create binary mask for filtering
+        mask = torch.ones(scores.size(0), dtype=torch.bool, device=device)
+        mask[filter_idx] = False  # Remove all known positives
+        mask[true_idx] = True    # Add back the target triple
+        
+        # Apply filter
+        filtered_scores = scores.clone()
+        filtered_scores[~mask] = float('-inf')
+        
+        # Get rank
+        true_score = filtered_scores[true_idx]
+        rank = (filtered_scores >= true_score).sum().item()
+        
         ranks_list.append(rank)
         for k in hits_dict.keys():
             if rank <= k:
@@ -108,69 +114,40 @@ def evaluate_2pass(model, dataloader, device):
         filter_o = batch['filter_o'].to(device)
         filter_h = batch['filter_h'].to(device)
 
-        # ====== TAIL PREDICTION ======
-        scores_tail = model.forward(subject, relation)
-        n_entities = scores_tail.size(1)
-
-        # Multi-hot target for tail
-        targets_tail = torch.zeros_like(scores_tail, device=device)
-        for i in range(scores_tail.size(0)):
-            targets_tail[i][filter_o[i]] = 1
-        neg_mask_tail = (targets_tail == 0)
-        pos_mask_tail = (targets_tail == 1)
-
-        targets_tail[neg_mask_tail] = 0.1 / n_entities
-        targets_tail[pos_mask_tail] = 1.0 - 0.1
-        loss_tail = F.binary_cross_entropy_with_logits(scores_tail, targets_tail)
-
-        # Filter for ranking
+        # Tail prediction
+        scores_tail = model(subject, relation)
         scores_tail = torch.sigmoid(scores_tail)
         for i in range(scores_tail.size(0)):
-            mask = torch.ones(n_entities, dtype=torch.bool, device=device)
-            mask[filter_o[i]] = False
-            mask[object_true[i]] = True
-            filtered_scores = scores_tail[i].clone()
-            filtered_scores[~mask] = float('-inf')
-            # Update tail rank
-            update_ranks(filtered_scores, object_true[i].item(), ranks_all, hits_all)
+            update_ranks(
+                scores_tail[i], 
+                object_true[i].item(),
+                filter_o[i],
+                ranks_all,
+                hits_all
+            )
 
-        # ====== HEAD PREDICTION ======
+        # Head prediction 
         scores_head = model.forward_head(object_true, relation)
-        targets_head = torch.zeros_like(scores_head, device=device)
-        for i in range(scores_head.size(0)):
-            targets_head[i][filter_h[i]] = 1
-        neg_mask_head = (targets_head == 0)
-        pos_mask_head = (targets_head == 1)
-
-        targets_head[neg_mask_head] = 0.1 / n_entities
-        targets_head[pos_mask_head] = 1.0 - 0.1
-        loss_head = F.binary_cross_entropy_with_logits(scores_head, targets_head)
-
         scores_head = torch.sigmoid(scores_head)
         for i in range(scores_head.size(0)):
-            mask = torch.ones(n_entities, dtype=torch.bool, device=device)
-            mask[filter_h[i]] = False
-            mask[subject[i]] = True
-            filtered_scores = scores_head[i].clone()
-            filtered_scores[~mask] = float('-inf')
-            # Update head rank
-            update_ranks(filtered_scores, subject[i].item(), ranks_all, hits_all)
+            update_ranks(
+                scores_head[i],
+                subject[i].item(),
+                filter_h[i], 
+                ranks_all,
+                hits_all
+            )
 
-        # Average of tail+head loss
-        total_loss += 0.5 * (loss_tail.item() + loss_head.item())
-
+    # Calculate metrics
     mr = np.mean(ranks_all)
     mrr = np.mean([1.0 / r for r in ranks_all])
-    hits_at_1 = hits_all[1] / len(ranks_all)
-    hits_at_3 = hits_all[3] / len(ranks_all)
-    hits_at_10 = hits_all[10] / len(ranks_all)
-
+    
     metrics = {
         'mr': mr,
         'mrr': mrr,
-        'hits@1': hits_at_1,
-        'hits@3': hits_at_3,
-        'hits@10': hits_at_10,
+        'hits@1': hits_all[1]/len(ranks_all),
+        'hits@3': hits_all[3]/len(ranks_all),
+        'hits@10': hits_all[10]/len(ranks_all),
         'loss': total_loss / len(dataloader)
     }
 

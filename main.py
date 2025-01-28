@@ -22,14 +22,16 @@ def main(data_path, dataset='FB15k-237'):
             "dataset": dataset,
             "embedding_dim": 200,
             "embedding_shape1": 20,
-            "input_dropout": 0.2,
+            "input_dropout": 0.3,
             "hidden_dropout": 0.3,
             "feature_map_dropout": 0.2,
-            "num_epochs": 100,
+            "num_epochs": 1000,
             "batch_size": 128,
-            "learning_rate": 0.003,
+            "learning_rate": 0.001,
             "label_smoothing": 0.1,
-            "use_stacked_embeddings": True
+            "use_stacked_embeddings": True,
+            "eval_every": 1,
+            "weight_decay": 0.0001
         }
     )
     config = wandb.config
@@ -64,18 +66,70 @@ def main(data_path, dataset='FB15k-237'):
     )
     model = model.to(device)
 
-    # Train
-    print("Starting training...")
-    model = train_conve(
-        model=model,
-        train_dataloader=train_loader,
-        valid_dataloader=valid_loader,
-        num_epochs=config.num_epochs,
-        learning_rate=config.learning_rate,
-        device=device,
-        eval_every=1,
-        save_path="checkpoints"
+    # Update wandb config with dataset sizes
+    wandb.config.update({
+        "num_entities": len(data_loader.entity2id),
+        "num_relations": len(data_loader.relation2id),
+        "num_train_triples": len(datasets['train']),
+    })
+
+    # Optimizer with learning rate scheduler
+    optimizer = torch.optim.Adam(
+        model.parameters(), 
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay  # L2 regularization
     )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='max', 
+        factor=0.5, 
+        patience=3,
+        verbose=True
+    )
+
+    # Train with early stopping
+    print("Starting training...")
+    best_mrr = 0
+    patience = 5
+    patience_counter = 0
+    
+    for epoch in range(config.num_epochs):
+        # Training
+        train_loss = train_epoch(model, train_loader, optimizer, device)
+        
+        # Validation
+        if epoch % config.eval_every == 0:
+            valid_metrics = evaluate_2pass(model, valid_loader, device)
+            
+            # Learning rate scheduling
+            scheduler.step(valid_metrics['mrr'])
+            
+            # Early stopping
+            if valid_metrics['mrr'] > best_mrr:
+                best_mrr = valid_metrics['mrr']
+                patience_counter = 0
+                # Save best model
+                torch.save(model.state_dict(), f"checkpoints/best_model_{dataset}.pt")
+            else:
+                patience_counter += 1
+            
+            # Log metrics
+            wandb.log({
+                'epoch': epoch,
+                'train_loss': train_loss,
+                'valid_mrr': valid_metrics['mrr'],
+                'valid_hits@1': valid_metrics['hits@1'],
+                'valid_hits@3': valid_metrics['hits@3'],
+                'valid_hits@10': valid_metrics['hits@10'],
+                'learning_rate': optimizer.param_groups[0]['lr']
+            })
+            
+            if patience_counter >= patience:
+                print(f"Early stopping triggered after {epoch} epochs")
+                break
+    
+    # Load best model for testing
+    model.load_state_dict(torch.load(f"checkpoints/best_model_{dataset}.pt"))
 
     # Final test evaluation
     print("\nEvaluating on test set...")

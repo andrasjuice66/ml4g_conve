@@ -53,9 +53,13 @@ class ConvE(nn.Module):
         fc_length = 32 * conv_output_height * conv_output_width
         self.fc = nn.Linear(fc_length, embedding_dim)
 
-        # Initialize embeddings
-        nn.init.xavier_normal_(self.entity_embeddings.weight)
-        nn.init.xavier_normal_(self.relation_embeddings.weight)
+        # Initialize embeddings with smaller values
+        nn.init.xavier_normal_(self.entity_embeddings.weight, gain=0.1)
+        nn.init.xavier_normal_(self.relation_embeddings.weight, gain=0.1)
+        
+        # Initialize conv layers properly
+        nn.init.xavier_normal_(self.conv2d.weight, gain=1.414)
+        nn.init.zeros_(self.conv2d.bias)
 
     def _reshape_embeddings(self, e1_embedded, rel_embedded):
         """
