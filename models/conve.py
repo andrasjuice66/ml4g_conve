@@ -16,7 +16,8 @@ class ConvE(nn.Module):
         use_stacked_embeddings: bool = True,
         input_dropout: float = 0.2,
         hidden_dropout: float = 0.3,
-        feature_map_dropout: float = 0.2
+        feature_map_dropout: float = 0.2,
+        use_bias: bool = True
     ):
         super().__init__()
 
@@ -37,21 +38,21 @@ class ConvE(nn.Module):
         self.feature_map_dropout = nn.Dropout(feature_map_dropout)
 
         # Convolution layer
-        self.conv2d = nn.Conv2d(1, 32, (3, 3), padding=1)
+        self.conv2d = nn.Conv2d(1, 32, (3, 3), padding=0, bias=use_bias)
 
         # Calculate the size after convolution
         if use_stacked_embeddings:
-            conv_output_height = 2 * self.embedding_shape1  # Stacked version
+            conv_output_height = 2 * self.embedding_shape1 - 2  # Adjusted for padding=0
         else:
-            conv_output_height = 2 * self.embedding_shape1  # Interleaved version
+            conv_output_height = 2 * self.embedding_shape1 - 2  # Adjusted for padding=0
 
-        conv_output_width = self.embedding_shape2
+        conv_output_width = self.embedding_shape2 - 2  # Adjusted for padding=0
 
         # Output layers
         self.bn1 = nn.BatchNorm2d(32)
         self.bn2 = nn.BatchNorm1d(embedding_dim)
         fc_length = 32 * conv_output_height * conv_output_width
-        self.fc = nn.Linear(fc_length, embedding_dim)
+        self.fc = nn.Linear(fc_length, embedding_dim, bias=use_bias)
 
         # Initialize embeddings with smaller values
         nn.init.xavier_normal_(self.entity_embeddings.weight, gain=0.1)
@@ -60,6 +61,9 @@ class ConvE(nn.Module):
         # Initialize conv layers properly
         nn.init.xavier_normal_(self.conv2d.weight, gain=1.414)
         nn.init.zeros_(self.conv2d.bias)
+
+        # Add bias term for final scoring
+        self.bias = nn.Parameter(torch.zeros(num_entities))
 
     def _reshape_embeddings(self, e1_embedded, rel_embedded):
         """
@@ -108,6 +112,7 @@ class ConvE(nn.Module):
 
         # Final scoring against all entities
         x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
+        x = x + self.bias  # Add bias before sigmoid
         return x
 
     def forward_head(self, tail_idx, relation_idx):
@@ -140,4 +145,5 @@ class ConvE(nn.Module):
 
         # Final scoring against all entities
         x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
+        x = x + self.bias  # Add bias before sigmoid
         return x

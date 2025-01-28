@@ -159,6 +159,8 @@ def train_conve(
     valid_dataloader,
     num_epochs: int = 100,
     learning_rate: float = 0.001,
+    weight_decay: float = 0.0001,
+    use_bias: bool = True,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     eval_every: int = 1,
     save_path: str = "checkpoints"
@@ -175,10 +177,10 @@ def train_conve(
         torch.backends.cudnn.enabled = True
         train_dataloader.pin_memory = True
         valid_dataloader.pin_memory = True
-        optimizer = Adam(model.parameters(), lr=learning_rate, fused=True)
+        optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=True)
         scaler = torch.cuda.amp.GradScaler()
     else:
-        optimizer = Adam(model.parameters(), lr=learning_rate)
+        optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         scaler = None
 
     total_params = sum(p.numel() for p in model.parameters())
