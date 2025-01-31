@@ -1,292 +1,186 @@
-# utils/train.py
+
 import torch
-import torch.nn.functional as F
-from torch.optim import Adam
 import numpy as np
-from tqdm import tqdm
-import wandb
+import logging
 
-@torch.no_grad()
-def evaluate(model, dataloader, device):
-    """
-    Single-pass evaluator: tail prediction only.
-    For each (h, r), we filter out known positives except the real tail.
-    Then compute rank and hits@k.
-    """
-    model.eval()
-    ranks = []
-    hits = {1: 0, 3: 0, 10: 0}
-    total_loss = 0
+log = logging.getLogger(__name__)
 
-    for batch in tqdm(dataloader, desc="Evaluating (Tail Only)"):
-        subject = batch['subject'].to(device)
-        relation = batch['relation'].to(device)
-        object_true = batch['object'].to(device)
-        filter_o = batch['filter_o'].to(device)
 
-        # Get raw scores
-        scores = model(subject, relation)  # (B, num_entities)
-        n_entities = scores.size(1)
+def train(model, config, train_loader, num_entities, valid_loader, optimizer, device):
+    for epoch in range(config['epochs']):
+            model.train()
+            total_loss = 0.0
 
-        # Build multi-hot target for BCE
-        targets = torch.zeros_like(scores, device=device)
-        for i in range(scores.size(0)):
-            # Mark all known positives for (h, r)
-            targets[i][filter_o[i]] = 1
+            for i, str2var in enumerate(train_loader):
+                e1 = str2var['e1'].to(device)
+                rel = str2var['rel'].to(device)
+                e2_multi1 = str2var['e2_multi1'].to(device)
 
-        # Label smoothing
-        neg_mask = targets == 0
-        pos_mask = targets == 1
-        targets = targets.clone()
-        targets[neg_mask] = 0.1/n_entities
-        targets[pos_mask] = 1.0 - 0.1
+                B = e1.shape[0]
 
-        loss = F.binary_cross_entropy_with_logits(scores, targets)
-        total_loss += loss.item()
+                # Build a multi-hot target from e2_multi1
+                target = torch.zeros((B, num_entities), dtype=torch.float, device=device)
+                for row_idx in range(B):
+                    valid_ids = e2_multi1[row_idx][e2_multi1[row_idx] != -1]
+                    target[row_idx, valid_ids] = 1.0
 
-        # Filtered ranking evaluation
-        scores = torch.sigmoid(scores)
-        for i in range(scores.size(0)):
-            # Filter out known tails (set them -inf) except the gold object
-            mask = torch.ones(n_entities, dtype=torch.bool, device=device)
-            mask[filter_o[i]] = False
-            # Re-include the gold object
-            mask[object_true[i]] = True
+                # Label smoothing if needed
+                target = ((1.0 - config['label_smoothing']) * target) + (config['label_smoothing'] / num_entities)
 
-            filtered_scores = scores[i].clone()
-            filtered_scores[~mask] = float('-inf')
-
-            gold_score = filtered_scores[object_true[i]]
-            rank = (filtered_scores >= gold_score).sum().item()
-            ranks.append(rank)
-
-            for k in hits.keys():
-                if rank <= k:
-                    hits[k] += 1
-
-    mr = np.mean(ranks)
-    mrr = np.mean([1.0 / r for r in ranks])
-
-    metrics = {
-        'mr': mr,
-        'mrr': mrr,
-        'hits@1': hits[1]/len(ranks),
-        'hits@3': hits[3]/len(ranks),
-        'hits@10': hits[10]/len(ranks),
-        'loss': total_loss / len(dataloader)
-    }
-
-    return metrics
-
-@torch.no_grad()
-def evaluate_2pass(model, dataloader, device):
-    """
-    Two-pass evaluator: tail and head prediction.
-    """
-    model.eval()
-    ranks_all = []
-    hits_all = {1: 0, 3: 0, 10: 0}
-    total_loss = 0
-
-    def update_ranks(scores, true_idx, filter_idx, ranks_list, hits_dict):
-        # Create binary mask for filtering
-        mask = torch.ones(scores.size(0), dtype=torch.bool, device=device)
-        mask[filter_idx] = False  # Remove all known positives
-        mask[true_idx] = True    # Add back the target triple
-        
-        # Apply filter
-        filtered_scores = scores.clone()
-        filtered_scores[~mask] = float('-inf')
-        
-        # Get rank
-        true_score = filtered_scores[true_idx]
-        rank = (filtered_scores >= true_score).sum().item()
-        
-        ranks_list.append(rank)
-        for k in hits_dict.keys():
-            if rank <= k:
-                hits_dict[k] += 1
-
-    for batch in tqdm(dataloader, desc="Evaluating (Head+Tail)"):
-        subject = batch['subject'].to(device)
-        relation = batch['relation'].to(device)
-        object_true = batch['object'].to(device)
-        filter_o = batch['filter_o'].to(device)
-        filter_h = batch['filter_h'].to(device)
-
-        # Tail prediction
-        scores_tail = model(subject, relation)
-        scores_tail = torch.sigmoid(scores_tail)
-        for i in range(scores_tail.size(0)):
-            update_ranks(
-                scores_tail[i], 
-                object_true[i].item(),
-                filter_o[i],
-                ranks_all,
-                hits_all
-            )
-
-        # Head prediction 
-        scores_head = model.forward_head(object_true, relation)
-        scores_head = torch.sigmoid(scores_head)
-        for i in range(scores_head.size(0)):
-            update_ranks(
-                scores_head[i],
-                subject[i].item(),
-                filter_h[i], 
-                ranks_all,
-                hits_all
-            )
-
-    # Calculate metrics
-    mr = np.mean(ranks_all)
-    mrr = np.mean([1.0 / r for r in ranks_all])
-    
-    metrics = {
-        'mr': mr,
-        'mrr': mrr,
-        'hits@1': hits_all[1]/len(ranks_all),
-        'hits@3': hits_all[3]/len(ranks_all),
-        'hits@10': hits_all[10]/len(ranks_all),
-        'loss': total_loss / len(dataloader)
-    }
-
-    return metrics
-
-def train_conve(
-    model,
-    train_dataloader,
-    valid_dataloader,
-    num_epochs: int = 100,
-    learning_rate: float = 0.001,
-    weight_decay: float = 0.0001,
-    use_bias: bool = True,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    eval_every: int = 1,
-    save_path: str = "checkpoints"
-):
-    """
-    Main training loop for the ConvE model.
-    Uses multi-label target (via filter_o) and label smoothing on negatives.
-    """
-    model = model.to(device)
-
-    # GPU-specific optimizations if available
-    if device == "cuda":
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.enabled = True
-        train_dataloader.pin_memory = True
-        valid_dataloader.pin_memory = True
-        optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=True)
-        scaler = torch.cuda.amp.GradScaler()
-    else:
-        optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        scaler = None
-
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nTotal parameters: {total_params:,}")
-    print(f"Device: {device}")
-    print(f"Training samples: {len(train_dataloader.dataset):,}")
-    print(f"Validation samples: {len(valid_dataloader.dataset):,}")
-
-    best_mrr = 0.0
-
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
-        epoch_losses = []
-
-        with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
-            for batch_idx, batch in enumerate(pbar):
-                subject = batch['subject'].to(device)
-                relation = batch['relation'].to(device)
-                filter_o = batch['filter_o'].to(device)
-
-                # Forward pass
-                if device == "cuda":
-                    with torch.cuda.amp.autocast():
-                        scores = model(subject, relation)
-                        n_entities = scores.size(1)
-
-                        # Build multi-hot target
-                        targets = torch.zeros_like(scores, device=device)
-                        for i in range(scores.size(0)):
-                            targets[i][filter_o[i]] = 1
-
-                        # Label smoothing
-                        neg_mask = targets == 0
-                        pos_mask = targets == 1
-                        targets[neg_mask] = 0.1 / n_entities
-                        targets[pos_mask] = 1.0 - 0.1
-
-                        loss = F.binary_cross_entropy_with_logits(scores, targets)
-                else:
-                    # CPU logic (same approach)
-                    scores = model(subject, relation)
-                    n_entities = scores.size(1)
-                    targets = torch.zeros_like(scores, device=device)
-                    for i in range(scores.size(0)):
-                        targets[i][filter_o[i]] = 1
-
-                    neg_mask = targets == 0
-                    pos_mask = targets == 1
-                    targets[neg_mask] = 0.1 / n_entities
-                    targets[pos_mask] = 1.0 - 0.1
-
-                    loss = F.binary_cross_entropy_with_logits(scores, targets)
-
-                optimizer.zero_grad(set_to_none=True)
-                if scaler is not None:
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    optimizer.step()
+                pred = model.forward(e1, rel)
+                loss = model.loss(pred, target)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
                 total_loss += loss.item()
-                epoch_losses.append(loss.item())
-                pbar.set_postfix({'loss': f'{(total_loss / (batch_idx + 1)):.4f}'})
+                # track loader state
+                train_loader.state = {}
+                train_loader.state['loss'] = loss.item()
 
-        if device == "cuda":
-            torch.cuda.empty_cache()
+            avg_loss = total_loss / len(train_loader)
+            print(f"Epoch {epoch+1}/{config['epochs']}  -  Avg Train Loss: {avg_loss:.4f}")
+            # 6) Evaluate periodically
+            if (epoch + 1) % 5 == 0:
+                print("Evaluating on the validation set...")
+                evaluation(model, valid_loader)
 
-        # Evaluate
-        if (epoch + 1) % eval_every == 0:
-            model.eval()
-            with torch.cuda.amp.autocast(enabled=(device=="cuda")):
-                metrics = evaluate_2pass(model, valid_dataloader, device)
+   
 
-            print("\nValidation:")
-            print(f"  Loss:  {metrics['loss']:.4f}")
-            print(f"  MR:    {metrics['mr']:.1f}")
-            print(f"  MRR:   {metrics['mrr']:.4f}")
-            print(f"  Hits@1: {metrics['hits@1']:.4f}")
-            print(f"  Hits@3: {metrics['hits@3']:.4f}")
-            print(f"  Hits@10:{metrics['hits@10']:.4f}")
 
-            wandb.log({
-                'epoch': epoch + 1,
-                'train_loss': np.mean(epoch_losses),
-                'valid_loss': metrics['loss'],
-                'valid_mr': metrics['mr'],
-                'valid_mrr': metrics['mrr'],
-                'valid_hits@1': metrics['hits@1'],
-                'valid_hits@3': metrics['hits@3'],
-                'valid_hits@10': metrics['hits@10'],
-            })
+def evaluation(model, eval_loader):
+    """
+    Computes metrics (e.g., Hits@k, mean rank, MRR) using filtered rankings,
+    but keeps everything on GPU to reduce overhead.
 
-            # Save best model
-            if metrics['mrr'] > best_mrr:
-                best_mrr = metrics['mrr']
-                torch.save({
-                    'epoch': epoch+1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'best_mrr': best_mrr,
-                }, f"{save_path}/best_model.pt")
+    If memory usage is still too large, try reducing --test-batch-size.
+    """
 
-    return model
+    device = next(model.parameters()).device
+    model.eval()
+
+    # We'll keep track of ranks in Python lists.
+    # Or optionally, you could keep them in GPU tensors and .cpu() them once at the end.
+    hits_left = [[] for _ in range(10)]
+    hits_right = [[] for _ in range(10)]
+    hits = [[] for _ in range(10)]
+    ranks = []
+    ranks_left = []
+    ranks_right = []
+
+    # Turn off gradient calculations for eval
+    with torch.no_grad():
+        for i, str2var in enumerate(eval_loader):
+            # Move everything to GPU
+            e1 = str2var['e1'].to(device)
+            e2 = str2var['e2'].to(device)
+            rel = str2var['rel'].to(device)
+            rel_eval = str2var['rel_eval'].to(device)
+            e2_multi1 = str2var['e2_multi1'].to(device)
+            e2_multi2 = str2var['e2_multi2'].to(device)
+
+            # Forward passes
+            pred1 = model.forward(e1, rel)         # shape [B, num_entities]
+            pred2 = model.forward(e2, rel_eval)    # shape [B, num_entities]
+
+            B = e1.size(0)
+            # Filter and re-instate correct answer scores
+            for j in range(B):
+                # Known correct answers for the (e1, rel, ???) are in e2_multi1
+                # We'll "filter" them by setting their score to a large negative
+                filter1 = e2_multi1[j]
+                filter1 = filter1[filter1 != -1]  # remove padding
+                target_entity = e2[j]  # correct answer for (e1, rel)
+
+                # Save the correct score, set filter to -1e6
+                correct_score_1 = pred1[j, target_entity].clone()
+                pred1[j, filter1] = -1e6
+                # restore the target
+                pred1[j, target_entity] = correct_score_1
+
+                # For the inverse side: (e2, rel_eval, ???)
+                filter2 = e2_multi2[j]
+                filter2 = filter2[filter2 != -1]
+                correct_score_2 = pred2[j, e1[j]].clone()
+                pred2[j, filter2] = -1e6
+                pred2[j, e1[j]] = correct_score_2
+
+            # Now we do the ranking on GPU
+            # argsort each row in descending order => shape [B, num_entities]
+            sorted1 = torch.argsort(pred1, dim=1, descending=True)
+            sorted2 = torch.argsort(pred2, dim=1, descending=True)
+
+            # We want the rank of the correct answer for pred1 => e2
+            # and for pred2 => e1
+            # We'll do a GPU-based search:
+            # rank1 = torch.nonzero((sorted1[j] == e2[j]), as_tuple=True)[0].item()
+            # etc.
+
+            # Pull e1/e2 into local GPU arrays (they're already on GPU)
+            # We'll do a loop to accumulate results
+            for j in range(B):
+                # rank of e2[j] in sorted1[j]
+                # This returns a 1D tensor of all indices where sorted1[j] == e2[j]
+                # which should be exactly one element.
+                rank1_idx = torch.nonzero(sorted1[j] == e2[j], as_tuple=True)[0]
+                rank1 = rank1_idx.item()  # integer rank index
+
+                # rank of e1[j] in sorted2[j]
+                rank2_idx = torch.nonzero(sorted2[j] == e1[j], as_tuple=True)[0]
+                rank2 = rank2_idx.item()
+
+                # Convert to 1-based rank
+                ranks_left.append(rank1 + 1)
+                ranks_right.append(rank2 + 1)
+                ranks.append(rank1 + 1)
+                ranks.append(rank2 + 1)
+
+                # Hits@k for k in [1..10]
+                for hits_level in range(10):
+                    if rank1 <= hits_level:
+                        hits_left[hits_level].append(1.0)
+                    else:
+                        hits_left[hits_level].append(0.0)
+
+                    if rank2 <= hits_level:
+                        hits_right[hits_level].append(1.0)
+                    else:
+                        hits_right[hits_level].append(0.0)
+
+                    # overall hits
+                    if rank1 <= hits_level:
+                        hits[hits_level].append(1.0)
+                    else:
+                        hits[hits_level].append(0.0)
+                    if rank2 <= hits_level:
+                        hits[hits_level].append(1.0)
+                    else:
+                        hits[hits_level].append(0.0)
+
+            # If your eval loader tracks a loss or progress bar:
+            eval_loader.state = {}
+            eval_loader.state['loss'] = 0
+
+    # We have gathered all ranks in Python lists. We can print stats now.
+    # Convert them to NumPy for easier mean computations
+    ranks_left_arr = np.array(ranks_left)
+    ranks_right_arr = np.array(ranks_right)
+    ranks_arr = np.array(ranks)
+
+    log.info('')
+    for i in range(10):
+        # i goes from 0..9, so hits@i+1 is the real
+        hl = np.mean(hits_left[i])
+        hr = np.mean(hits_right[i])
+        hh = np.mean(hits[i])
+        log.info('Hits left @{0}: {1}', i+1, hl)
+        log.info('Hits right @{0}: {1}', i+1, hr)
+        log.info('Hits @{0}: {1}', i+1, hh)
+
+    log.info('Mean rank left: {0}', np.mean(ranks_left_arr))
+    log.info('Mean rank right: {0}', np.mean(ranks_right_arr))
+    log.info('Mean rank: {0}', np.mean(ranks_arr))
+
+    log.info('Mean reciprocal rank left: {0}', np.mean(1./ranks_left_arr))
+    log.info('Mean reciprocal rank right: {0}', np.mean(1./ranks_right_arr))
+    log.info('Mean reciprocal rank: {0}', np.mean(1./ranks_arr))

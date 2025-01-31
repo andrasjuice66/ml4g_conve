@@ -64,3 +64,10 @@ data/
 best_model.pth
 
 notebooks/
+gold/
+manual runs/
+rethink/    
+checkpoints/
+old/
+
+models/__pycache__/

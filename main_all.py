@@ -1,171 +1,140 @@
 import torch
+import numpy as np
 from pathlib import Path
-import argparse
-from models.conve import ConvE
-from models.conve_deep import ConvEDeep
-from models.conve_att import AttnConvE
-from utils.preprocess import KGDataLoader, create_dataloader
-from utils.train import train_conve, evaluate, evaluate_2pass
 import wandb
-import os
-import datetime
+from models.conve import ConvE
+from models.conve_deep import DeepConvE
+from models.conve_att import AttnConvE
+from utils.train import train, evaluation
+from torch.utils.data import DataLoader
+from utils.preprocess import JSONLinkPredictionDataset, collate_fn, build_vocab
+from datetime import datetime
+# Replace argparse with config dictionary
+config = {
+    'batch_size': 128,
+    'test_batch_size': 128,
+    'epochs': 100,
+    'lr': 0.003,
+    'seed': 17,
+    'log_interval': 100,
+    'l2': 0.0,
+    'embedding_dim': 200,
+    'embedding_shape1': 20,
+    'hidden_drop': 0.3,
+    'input_drop': 0.2,
+    'feat_drop': 0.2,
+    'lr_decay': 0.995,
+    'loader_threads': 4,
+    'use_bias': False,
+    'label_smoothing': 0.1,
+    'hidden_size': 9728,
+    'num_attention_heads': 4,
+    'ff_hidden_dim': 200,
+    'dropout_attention': 0.1,
+    'dropout_input': 0.2,
+    'dropout_feature': 0.2,
 
-def run_experiment(model_name, model_class, config, data_path, dataset, device):
-    """Run a single experiment with given model and configuration"""
-    
-    # Initialize wandb
-    run_name = f"{model_name}_{dataset}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    wandb.init(
-        project="conve-kg",
-        name=run_name,
-        config=config,
-        reinit=True
-    )
-    
-    print(f"\nRunning {model_name} on {dataset}")
-    print("Loading data...")
-    data_loader = KGDataLoader(f"{data_path}{dataset}")
-    datasets = data_loader.load_data()
-
-    # Create dataloaders
-    train_loader = create_dataloader(datasets['train'], batch_size=config['batch_size'], shuffle=True)
-    valid_loader = create_dataloader(datasets['valid'], batch_size=config['batch_size'], shuffle=False)
-    test_loader = create_dataloader(datasets['test'], batch_size=config['batch_size'], shuffle=False)
-
-    # Initialize model
-    print(f"Initializing {model_name} model...")
-    model_params = {k: v for k, v in config.items() if k not in 
-                   ['num_epochs', 'batch_size', 'learning_rate', 'label_smoothing', 'dataset']}
-    model_params.update({
-        'num_entities': len(data_loader.entity2id),
-        'num_relations': len(data_loader.relation2id),
-    })
-    
-    model = model_class(**model_params).to(device)
-    print(f"Model is on device: {next(model.parameters()).device}")
-
-    # Training parameters
-    train_params = {
-        'num_epochs': config['num_epochs'],
-        'learning_rate': config['learning_rate'],
-        'save_path': f"checkpoints/{model_name}_{dataset}",
-        'eval_every': 1
-    }
-
-    # Train model
-    print(f"Starting {model_name} training...")
-    model = train_conve(
-        model=model,
-        train_dataloader=train_loader,
-        valid_dataloader=valid_loader,
-        device=device,
-        **train_params
-    )
-
-    # Final evaluation
-    print("\nEvaluating on test set...")
-    test_metrics = evaluate_2pass(model, test_loader, device)
-
-    # Log metrics
-    wandb.log({
-        'test_mr': test_metrics['mr'],
-        'test_mrr': test_metrics['mrr'],
-        'test_hits@1': test_metrics['hits@1'],
-        'test_hits@3': test_metrics['hits@3'],
-        'test_hits@10': test_metrics['hits@10']
-    })
-
-    print("\nFinal Test Metrics:")
-    print(f"MR: {test_metrics['mr']:.1f}")
-    print(f"MRR: {test_metrics['mrr']:.4f}")
-    print(f"Hits@1: {test_metrics['hits@1']:.4f}")
-    print(f"Hits@3: {test_metrics['hits@3']:.4f}")
-    print(f"Hits@10: {test_metrics['hits@10']:.4f}")
-
-    wandb.finish()
+    # New configurations
+    'wandb_project': 'knowledge_graph_link_pred',
+    'wandb_entity': 'andrasjoos',  # Replace with your wandb username/entity
+    'datasets': ['WN18RR', 'FB15K-237', 'YAGO3-10'],  # Add all your datasets here
+    'models': ['conve', 'deepconve', 'attnconve'],
+    'embedding_style': ['stacked', 'alternating'],
+    'path': '/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data'
+}
 
 def main():
-    wandb.finish()
-    # Initialize wandb
-    wandb_api_key = 'a15aa5a84ab821022d13f9aa3a59ec1770fe93a3'
-    wandb.login(key=wandb_api_key)
-
-    # Set device
+    # Login to wandb
+    wandb.login(key='a15aa5a84ab821022d13f9aa3a59ec1770fe93a3')  # Replace with your wandb API key
+    
+    # Set seeds for reproducibility
+    torch.manual_seed(config['seed'])
+    np.random.seed(config['seed'])
+    
+    # Decide on device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if not torch.cuda.is_available():
-        print("WARNING: CUDA is not available. Running on CPU!")
-    else:
-        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    print(f"[INFO] Using device: {device}")
 
-    # Define configurations
-    base_config = {
-        "embedding_dim": 200,
-        "embedding_shape1": 20,
-        "num_epochs": 100,
-        "batch_size": 128,
-        "learning_rate": 0.003,
-        "label_smoothing": 0.1,
-    }
-
-    model_configs = {
-        "ConvE": {
-            **base_config,
-            "input_dropout": 0.2,
-            "hidden_dropout": 0.3,
-            "feature_map_dropout": 0.2,
-        },
-        "ConvEDeep": {
-            **base_config,
-            "input_dropout": 0.2,
-            "hidden_dropout": 0.3,
-            "feature_map_dropout": 0.2,
-        },
-        "AttnConvE": {
-            **base_config,
-            "num_attention_heads": 4,
-            "ff_hidden_dim": 400,
-            "conv_channels": 32,
-            "dropout_attention": 0.1,
-            "dropout_input": 0.2,
-            "dropout_feature_map": 0.2,
-        }
-    }
-
-    # Model classes
-    models = {
-        "ConvE": ConvE,
-        "ConvEDeep": ConvEDeep,
-        "AttnConvE": AttnConvE
-    }
-
-    # Datasets
-    data_path = "/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data/"
-    datasets = ['WN18RR', 'FB15k-237']
-
-    # Run experiments
-    embedding_settings = [True, False]  # True for stacked, False for alternating
-
-    for use_stacked in embedding_settings:
-        print(f"\nRunning experiments with {'stacked' if use_stacked else 'alternating'} embeddings")
-        
-        for dataset in datasets:
-            for model_name, model_class in models.items():
-                current_config = model_configs[model_name].copy()
-                current_config['use_stacked_embeddings'] = use_stacked
-                current_config['dataset'] = dataset
-                
-                try:
-                    run_experiment(
-                        model_name=f"{model_name}_{'stacked' if use_stacked else 'alt'}",
-                        model_class=model_class,
-                        config=current_config,
-                        data_path=data_path,
-                        dataset=dataset,
-                        device=device
-                    )
-                except Exception as e:
-                    print(f"Error running {model_name} on {dataset}: {str(e)}")
+    # Loop through datasets and models
+    for dataset in config['datasets']:
+        for model_name in config['models']:
+            for embedding_style in config['embedding_style']:
+                if model_name == 'attnconve' or model_name == 'deepconve':
                     continue
+                current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                # Initialize new wandb run
+                run = wandb.init(
+                    project=config['wandb_project'],
+                    entity=config['wandb_entity'],
+                    config=config,
+                    name=f"{model_name}_{dataset}_{embedding_style}_{current_time}",
+                    reinit=True  # Allow multiple runs
+                )
+
+                print(f"[INFO] Training {model_name} on {dataset} dataset")
+                
+                base_path = f"{config['path']}/{dataset}1"
+                entity2id_path = str(Path(base_path) / "entity2id.json")
+                relation2id_path = str(Path(base_path) / "relation2id.json")
+                train_json = str(Path(base_path) / "e1rel_to_e2_train.json")
+                dev_json = str(Path(base_path) / "e1rel_to_e2_ranking_dev.json")
+                test_json = str(Path(base_path) / "e1rel_to_e2_ranking_test.json")
+
+                # Build vocab
+                vocab = build_vocab(entity2id_path, relation2id_path)
+                num_entities = vocab['e1'].num_token
+                num_relations = vocab['rel'].num_token
+
+                # Create datasets and dataloaders
+                train_dataset = JSONLinkPredictionDataset(train_json, mode='train')
+                dev_dataset = JSONLinkPredictionDataset(dev_json, mode='eval')
+                test_dataset = JSONLinkPredictionDataset(test_json, mode='eval')
+
+                train_loader = DataLoader(
+                    dataset=train_dataset,
+                    batch_size=config['batch_size'],
+                    shuffle=True,
+                    num_workers=0,
+                    collate_fn=collate_fn
+                )
+                val_loader = DataLoader(
+                    dataset=dev_dataset,
+                    batch_size=config['test_batch_size'],
+                    shuffle=False,
+                    num_workers=0,
+                    collate_fn=collate_fn
+                )
+                test_loader = DataLoader(
+                    dataset=test_dataset,
+                    batch_size=config['test_batch_size'],
+                    shuffle=False,
+                    num_workers=0,
+                    collate_fn=collate_fn
+                )
+
+                # Initialize model
+                if model_name == 'conve':
+                    model = ConvE(config, num_entities, num_relations)
+                elif model_name == 'deepconve':
+                    model = DeepConvE(config, num_entities, num_relations)
+                elif model_name == 'attnconve':
+                    model = AttnConvE(config, num_entities, num_relations)
+
+                model.to(device)
+                model.init()
+
+                optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], weight_decay=config['l2'])
+
+                print("Training...")
+                train(model, config, train_loader, num_entities, val_loader, optimizer, device)
+                print("Evaluating on the test set...")
+                test_metrics = evaluation(model, test_loader)
+                
+                # Log final test metrics to wandb
+                wandb.log({"test_" + k: v for k, v in test_metrics.items()})
+                
+                # Close current wandb run
+                run.finish()
 
 if __name__ == "__main__":
     main()

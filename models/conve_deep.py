@@ -1,191 +1,136 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.init import xavier_normal_
+from torch.nn.parameter import Parameter
 
-class ConvEDeep(nn.Module):
-    def __init__(
-        self,
-        num_entities: int,
-        num_relations: int,
-        embedding_dim: int = 200,
-        embedding_shape1: int = 20,
-        use_stacked_embeddings: bool = True,
-        input_dropout: float = 0.2,
-        hidden_dropout: float = 0.3,
-        feature_map_dropout: float = 0.2
-    ):
+
+class DeepConvE(nn.Module):
+    def __init__(self, config, num_entities, num_relations):
         super().__init__()
 
-        self.num_entities = num_entities
-        self.num_relations = num_relations
-        self.embedding_dim = embedding_dim
-        self.embedding_shape1 = embedding_shape1
-        self.embedding_shape2 = embedding_dim // embedding_shape1
-        self.use_stacked_embeddings = use_stacked_embeddings
-
         # Embeddings
-        self.entity_embeddings = nn.Embedding(num_entities, embedding_dim)
-        self.relation_embeddings = nn.Embedding(num_relations, embedding_dim)
+        self.emb_e = nn.Embedding(num_entities, config['embedding_dim'], padding_idx=0)
+        self.emb_rel = nn.Embedding(num_relations, config['embedding_dim'], padding_idx=0)
 
         # Dropout layers
-        self.input_dropout = nn.Dropout(input_dropout)
-        self.hidden_dropout = nn.Dropout(hidden_dropout)
-        self.feature_map_dropout = nn.Dropout(feature_map_dropout)
+        self.inp_drop = nn.Dropout(config['input_drop'])
+        self.hidden_drop = nn.Dropout(config['hidden_drop'])
+        self.feature_map_drop = nn.Dropout2d(config['feat_drop'])
 
-        # ---------------------------------------------------------------------
-        # Convolution layers (deeper model)
-        # ---------------------------------------------------------------------
-        # First convolution layer
-        self.conv2d_1 = nn.Conv2d(
-            in_channels=1,
-            out_channels=32,
-            kernel_size=(3, 3),
-            padding=1
-        )
-        self.bn_c1 = nn.BatchNorm2d(32)
+        # Dimensions
+        self.emb_dim1 = config['embedding_shape1']
+        self.emb_dim2 = config['embedding_dim'] // self.emb_dim1
 
-        # Second convolution layer
-        self.conv2d_2 = nn.Conv2d(
-            in_channels=32,
-            out_channels=64,
-            kernel_size=(3, 3),
-            padding=1
-        )
-        self.bn_c2 = nn.BatchNorm2d(64)
+        # Embedding arrangement
+        self.use_stacked_embeddings = True
+        # if config['embedding_style'] == 'stacked':
+        #     self.alternate_embeddings = False
+        # elif config['embedding_style'] == 'alternating':
+        #     self.alternate_embeddings = True
+        # else:
+        #     raise ValueError(f"Invalid embedding style: {config['embedding_style']}")
+        
+        # Deeper Convolutional Layers
+        self.conv_layers = nn.ModuleList([
+            nn.Conv2d(1, 32, (3, 3), 1, 1, bias=config['use_bias']),
+            nn.Conv2d(32, 64, (3, 3), 1, 1, bias=config['use_bias']),
+            nn.Conv2d(64, 128, (3, 3), 1, 1, bias=config['use_bias']),
+            nn.Conv2d(128, 256, (3, 3), 1, 1, bias=config['use_bias'])
+        ])
 
-        # ---------------------------------------------------------------------
-        # We keep embedding stacking/interleaving logic the same
-        # ---------------------------------------------------------------------
-        if use_stacked_embeddings:
-            conv_output_height = 2 * self.embedding_shape1
-        else:
-            conv_output_height = 2 * self.embedding_shape1
+        # Batch Normalization Layers
+        self.bn0 = nn.BatchNorm2d(1)
+        self.bn_layers = nn.ModuleList([
+            nn.BatchNorm2d(32),
+            nn.BatchNorm2d(64),
+            nn.BatchNorm2d(128),
+            nn.BatchNorm2d(256)
+        ])
+        self.bn_final = nn.BatchNorm1d(config['embedding_dim'])
 
-        conv_output_width = self.embedding_shape2
+        # Deeper Feed-forward layers
+        conv_output_size = self._calculate_conv_output_size()
+        self.fc_layers = nn.ModuleList([
+            nn.Linear(conv_output_size, 2048),
+            nn.Linear(2048, 1024),
+            nn.Linear(1024, config['embedding_dim'])
+        ])
 
-        # ---------------------------------------------------------------------
-        # Fully-connected layer
-        # After the second Conv2D, we have 64 feature maps
-        # The flattened size is (64 * conv_output_height * conv_output_width)
-        # ---------------------------------------------------------------------
-        fc_length = 64 * conv_output_height * conv_output_width
-        self.fc = nn.Linear(fc_length, embedding_dim)
+        # Bias
+        self.b = Parameter(torch.zeros(num_entities))
 
-        # BatchNorm for the FC output
-        self.bn_fc = nn.BatchNorm1d(embedding_dim)
+        # Initialize weights
+        self.init()
 
-        # Initialize embeddings
-        nn.init.xavier_normal_(self.entity_embeddings.weight)
-        nn.init.xavier_normal_(self.relation_embeddings.weight)
+    def _calculate_conv_output_size(self):
+        # Helper function to calculate the size after convolutions
+        # This is an approximate calculation - adjust based on your input size
+        h = self.emb_dim1 * 2  # For stacked embeddings
+        w = self.emb_dim2
+        # After 4 conv layers with padding=1
+        return 256 * h * w
 
-    def _reshape_embeddings(self, e1_embedded, rel_embedded):
-        """
-        Reshapes and either stacks or interleaves the subject and relation
-        embeddings for convolution input.
-        """
+    def init(self):
+        xavier_normal_(self.emb_e.weight.data)
+        xavier_normal_(self.emb_rel.weight.data)
+        for conv in self.conv_layers:
+            xavier_normal_(conv.weight.data)
+        for fc in self.fc_layers:
+            xavier_normal_(fc.weight.data)
+
+    def arrange_embeddings(self, e1_embedded, rel_embedded):
         if self.use_stacked_embeddings:
-            # Original stacked version
-            stacked_inputs = torch.stack([e1_embedded, rel_embedded], dim=1)
-            stacked_inputs = stacked_inputs.reshape(
-                -1, 1, 2 * self.embedding_shape1, self.embedding_shape2
-            )
+            return torch.cat([e1_embedded, rel_embedded], 2)
         else:
-            # Interleaved version
-            e1 = e1_embedded.view(-1, self.embedding_shape1, self.embedding_shape2)
-            rel = rel_embedded.view(-1, self.embedding_shape1, self.embedding_shape2)
+            batch_size = e1_embedded.size(0)
+            e1_rows = e1_embedded.view(batch_size, self.emb_dim1, self.emb_dim2)
+            rel_rows = rel_embedded.view(batch_size, self.emb_dim1, self.emb_dim2)
+            total_rows = self.emb_dim1 * 2
+            result = torch.empty(batch_size, total_rows, self.emb_dim2,
+                               device=e1_embedded.device)
+            result[:, 0::2] = e1_rows
+            result[:, 1::2] = rel_rows
+            return result.unsqueeze(1)
 
-            interleaved = torch.zeros_like(e1.repeat(1, 2, 1))
-            interleaved[:, 0::2, :] = e1
-            interleaved[:, 1::2, :] = rel
+    def forward(self, e1, rel):
+        # Get embeddings and reshape
+        e1_embedded = self.emb_e(e1).view(-1, 1, self.emb_dim1, self.emb_dim2)
+        rel_embedded = self.emb_rel(rel).view(-1, 1, self.emb_dim1, self.emb_dim2)
 
-            stacked_inputs = interleaved.unsqueeze(1)
+        # Arrange embeddings
+        stacked_inputs = self.arrange_embeddings(e1_embedded, rel_embedded)
+        x = self.bn0(stacked_inputs)
+        x = self.inp_drop(x)
 
-        return stacked_inputs
+        # Deep Convolution layers
+        for conv, bn in zip(self.conv_layers, self.bn_layers):
+            x = conv(x)
+            x = bn(x)
+            x = F.relu(x)
+            x = self.feature_map_drop(x)
 
-    def forward(self, subject_idx, relation_idx):
-        """
-        Forward pass to predict the scores for all possible objects
-        given (subject, relation).
-        """
-        batch_size = subject_idx.size(0)
+        # Flatten and apply deep feed-forward layers
+        x = x.view(x.shape[0], -1)
 
-        # Get embeddings
-        subject_embedded = self.entity_embeddings(subject_idx).view(-1, self.embedding_dim)
-        relation_embedded = self.relation_embeddings(relation_idx).view(-1, self.embedding_dim)
+        # Apply feed-forward layers with residual connections
+        for i, fc in enumerate(self.fc_layers):
+            identity = x
+            x = fc(x)
+            x = F.relu(x)
+            x = self.hidden_drop(x)
+            # Residual connection for matching dimensions
+            if i < len(self.fc_layers) - 1 and identity.shape == x.shape:
+                x = x + identity
 
-        # Reshape
-        stacked_inputs = self._reshape_embeddings(subject_embedded, relation_embedded)
-
-        # Apply input dropout
-        x = self.input_dropout(stacked_inputs)
-
-        # ---------------------------------------------------------------------
-        # Pass through first conv layer
-        # ---------------------------------------------------------------------
-        x = self.conv2d_1(x)
-        x = self.bn_c1(x)
-        x = F.relu(x)
-        x = self.feature_map_dropout(x)
-
-        # ---------------------------------------------------------------------
-        # Pass through second conv layer
-        # ---------------------------------------------------------------------
-        x = self.conv2d_2(x)
-        x = self.bn_c2(x)
-        x = F.relu(x)
-        x = self.feature_map_dropout(x)
-
-        # Flatten
-        x = x.view(batch_size, -1)
-
-        # FC layer
-        x = self.fc(x)
-        x = self.hidden_dropout(x)
-        x = self.bn_fc(x)
+        x = self.bn_final(x)
         x = F.relu(x)
 
-        # Score computation against all entities
-        x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
-        return x
+        # Final computations
+        x = torch.mm(x, self.emb_e.weight.transpose(1, 0))
+        x = x + self.b
 
-    def forward_head(self, tail_idx, relation_idx):
-        """
-        Forward pass for head prediction tasks.
-        Predict scores for all possible subjects given (tail, relation).
-        """
-        batch_size = tail_idx.size(0)
+        return torch.sigmoid(x)
 
-        # Get embeddings
-        tail_embedded = self.entity_embeddings(tail_idx).view(-1, self.embedding_dim)
-        relation_embedded = self.relation_embeddings(relation_idx).view(-1, self.embedding_dim)
-
-        # Reshape
-        stacked_inputs = self._reshape_embeddings(tail_embedded, relation_embedded)
-
-        # Apply input dropout
-        x = self.input_dropout(stacked_inputs)
-
-        # First conv layer
-        x = self.conv2d_1(x)
-        x = self.bn_c1(x)
-        x = F.relu(x)
-        x = self.feature_map_dropout(x)
-
-        # Second conv layer
-        x = self.conv2d_2(x)
-        x = self.bn_c2(x)
-        x = F.relu(x)
-        x = self.feature_map_dropout(x)
-
-        # Flatten
-        x = x.view(batch_size, -1)
-
-        # FC layer
-        x = self.fc(x)
-        x = self.hidden_dropout(x)
-        x = self.bn_fc(x)
-        x = F.relu(x)
-
-        # Score computation
-        x = torch.mm(x, self.entity_embeddings.weight.transpose(1, 0))
-        return x
+    def loss(self, pred, target):
+        return F.binary_cross_entropy(pred, target)
