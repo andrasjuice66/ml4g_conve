@@ -159,7 +159,7 @@ def evaluation(model, eval_loader):
     ranks_right_arr = np.array(ranks_right)
     ranks_arr = np.array(ranks)
 
-    # After computing all the metrics
+    # Compute all metrics
     metrics = {
         'mean_rank_left': np.mean(ranks_left_arr),
         'mean_rank_right': np.mean(ranks_right_arr),
@@ -175,38 +175,31 @@ def evaluation(model, eval_loader):
         metrics[f'hits_right@{i+1}'] = np.mean(hits_right[i])
         metrics[f'hits@{i+1}'] = np.mean(hits[i])
 
-    # Log metrics to wandb
-    wandb.log(metrics)
+    # Create a filtered version of metrics for wandb (only combined metrics)
+    wandb_metrics = {
+        'mean_rank': metrics['mean_rank'],
+        'mrr': metrics['mrr']
+    }
+    # Add only the combined hits@k
+    for i in range(10):
+        wandb_metrics[f'hits@{i+1}'] = metrics[f'hits@{i+1}']
 
-    # Still log to console as before
-    # log.info('')
-    # for i in range(10):
-    #     log.info('Hits left @{0}: {1}', i+1, metrics[f'hits_left@{i+1}'])
-    #     log.info('Hits right @{0}: {1}', i+1, metrics[f'hits_right@{i+1}'])
-    #     log.info('Hits @{0}: {1}', i+1, metrics[f'hits@{i+1}'])
+    # Log filtered metrics to wandb
+    wandb.log(wandb_metrics)
 
-    # log.info('Mean rank left: {0}', metrics['mean_rank_left'])
-    # log.info('Mean rank right: {0}', metrics['mean_rank_right'])
-    # log.info('Mean rank: {0}', metrics['mean_rank'])
-
-    # log.info('Mean reciprocal rank left: {0}', metrics['mrr_left'])
-    # log.info('Mean reciprocal rank right: {0}', metrics['mrr_right'])
-    # log.info('Mean reciprocal rank: {0}', metrics['mrr'])
-
-
-    # Still log to console as before
+    # Print everything to console
     print('')
     for i in range(10):
-        print('Hits left @{0}: {1}', i+1, metrics[f'hits_left@{i+1}'])
-        print('Hits right @{0}: {1}', i+1, metrics[f'hits_right@{i+1}'])
-        print('Hits @{0}: {1}', i+1, metrics[f'hits@{i+1}'])
+        print(f'Hits left @{i+1}: {metrics[f"hits_left@{i+1}"]}')
+        print(f'Hits right @{i+1}: {metrics[f"hits_right@{i+1}"]}')
+        print(f'Hits @{i+1}: {metrics[f"hits@{i+1}"]}')
 
-    print('Mean rank left: {0}', metrics['mean_rank_left'])
-    print('Mean rank right: {0}', metrics['mean_rank_right'])
-    print('Mean rank: {0}', metrics['mean_rank'])
+    print(f'Mean rank left: {metrics["mean_rank_left"]}')
+    print(f'Mean rank right: {metrics["mean_rank_right"]}')
+    print(f'Mean rank: {metrics["mean_rank"]}')
 
-    print('Mean reciprocal rank left: {0}', metrics['mrr_left'])
-    print('Mean reciprocal rank right: {0}', metrics['mrr_right'])
-    print('Mean reciprocal rank: {0}', metrics['mrr'])
+    print(f'Mean reciprocal rank left: {metrics["mrr_left"]}')
+    print(f'Mean reciprocal rank right: {metrics["mrr_right"]}')
+    print(f'Mean reciprocal rank: {metrics["mrr"]}')
 
-    return metrics  # Return metrics dictionary for use elsewhere
+    return metrics, wandb_metrics

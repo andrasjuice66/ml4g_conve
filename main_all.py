@@ -127,10 +127,10 @@ def main():
                 print("Training...")
                 train(model, config, train_loader, num_entities, val_loader, optimizer, device)
                 print("Evaluating on the test set...")
-                test_metrics = evaluation(model, test_loader)
+                _, test_wandb_metrics = evaluation(model, test_loader)
                 
                 # Log final test metrics to wandb
-                wandb.log({"test_" + k: v for k, v in test_metrics.items()})
+                wandb.log({"test_" + k: v for k, v in test_wandb_metrics.items()})
                 
                 # Close current wandb run
                 run.finish()
