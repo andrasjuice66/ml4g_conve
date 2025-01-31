@@ -35,15 +35,15 @@ config = {
     'dropout_feature': 0.2,
 
     # New configurations
-    'wandb_project': 'knowledge_graph_link_pred',
-    'wandb_entity': 'andrasjoos',  # Replace with your wandb username/entity
-    'datasets': ['WN18RR', 'FB15K-237', 'YAGO3-10'],  # Add all your datasets here
-    'models': ['conve', 'deepconve', 'attnconve'],
+    'wandb_project': 'debug-kg-runs',
+    'datasets': ['WN18RR', 'FB15K-237', 'YAGO3-10'],  
+    'models': ['deepconve', 'attnconve', 'conve'],
     'embedding_style': ['stacked', 'alternating'],
     'path': '/Users/andrasjoos/Documents/AI_masters/Period_9/ML4G/Project/LinkPred/data'
 }
 
 def main():
+    wandb.finish()
     # Login to wandb
     wandb.login(key='a15aa5a84ab821022d13f9aa3a59ec1770fe93a3')  # Replace with your wandb API key
     
@@ -59,13 +59,12 @@ def main():
     for dataset in config['datasets']:
         for model_name in config['models']:
             for embedding_style in config['embedding_style']:
-                if model_name == 'attnconve' or model_name == 'deepconve':
+                if (model_name == 'attnconve' or model_name == 'deepconve') and embedding_style == 'alternating':
                     continue
                 current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 # Initialize new wandb run
                 run = wandb.init(
                     project=config['wandb_project'],
-                    entity=config['wandb_entity'],
                     config=config,
                     name=f"{model_name}_{dataset}_{embedding_style}_{current_time}",
                     reinit=True  # Allow multiple runs
@@ -73,7 +72,7 @@ def main():
 
                 print(f"[INFO] Training {model_name} on {dataset} dataset")
                 
-                base_path = f"{config['path']}/{dataset}1"
+                base_path = f"{config['path']}/{dataset}"
                 entity2id_path = str(Path(base_path) / "entity2id.json")
                 relation2id_path = str(Path(base_path) / "relation2id.json")
                 train_json = str(Path(base_path) / "e1rel_to_e2_train.json")
@@ -114,7 +113,7 @@ def main():
 
                 # Initialize model
                 if model_name == 'conve':
-                    model = ConvE(config, num_entities, num_relations)
+                    model = ConvE(config, num_entities, num_relations, embedding_style)
                 elif model_name == 'deepconve':
                     model = DeepConvE(config, num_entities, num_relations)
                 elif model_name == 'attnconve':

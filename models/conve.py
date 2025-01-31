@@ -6,7 +6,7 @@ from torch.nn.parameter import Parameter
 
 
 class ConvE(nn.Module):
-    def __init__(self, config, num_entities, num_relations):
+    def __init__(self, config, num_entities, num_relations, embedding_style):
         super().__init__()
 
         # Embeddings
@@ -23,9 +23,9 @@ class ConvE(nn.Module):
         self.emb_dim2 = config['embedding_dim'] // self.emb_dim1
 
         # Embedding arrangement
-        if config['embedding_style'] == 'stacked':
+        if embedding_style == 'stacked':
             self.alternate_embeddings = False
-        elif config['embedding_style'] == 'alternating':
+        elif embedding_style == 'alternating':
             self.alternate_embeddings = True
         else:
             raise ValueError(f"Invalid embedding style: {config['embedding_style']}")

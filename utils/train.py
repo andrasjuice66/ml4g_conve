@@ -1,7 +1,7 @@
-
 import torch
 import numpy as np
 import logging
+import wandb
 
 log = logging.getLogger(__name__)
 
@@ -109,15 +109,7 @@ def evaluation(model, eval_loader):
             # argsort each row in descending order => shape [B, num_entities]
             sorted1 = torch.argsort(pred1, dim=1, descending=True)
             sorted2 = torch.argsort(pred2, dim=1, descending=True)
-
-            # We want the rank of the correct answer for pred1 => e2
-            # and for pred2 => e1
-            # We'll do a GPU-based search:
-            # rank1 = torch.nonzero((sorted1[j] == e2[j]), as_tuple=True)[0].item()
-            # etc.
-
-            # Pull e1/e2 into local GPU arrays (they're already on GPU)
-            # We'll do a loop to accumulate results
+            
             for j in range(B):
                 # rank of e2[j] in sorted1[j]
                 # This returns a 1D tensor of all indices where sorted1[j] == e2[j]
@@ -167,20 +159,38 @@ def evaluation(model, eval_loader):
     ranks_right_arr = np.array(ranks_right)
     ranks_arr = np.array(ranks)
 
+    # After computing all the metrics
+    metrics = {
+        'mean_rank_left': np.mean(ranks_left_arr),
+        'mean_rank_right': np.mean(ranks_right_arr),
+        'mean_rank': np.mean(ranks_arr),
+        'mrr_left': np.mean(1./ranks_left_arr),
+        'mrr_right': np.mean(1./ranks_right_arr),
+        'mrr': np.mean(1./ranks_arr)
+    }
+
+    # Add Hits@k metrics
+    for i in range(10):
+        metrics[f'hits_left@{i+1}'] = np.mean(hits_left[i])
+        metrics[f'hits_right@{i+1}'] = np.mean(hits_right[i])
+        metrics[f'hits@{i+1}'] = np.mean(hits[i])
+
+    # Log metrics to wandb
+    wandb.log(metrics)
+
+    # Still log to console as before
     log.info('')
     for i in range(10):
-        # i goes from 0..9, so hits@i+1 is the real
-        hl = np.mean(hits_left[i])
-        hr = np.mean(hits_right[i])
-        hh = np.mean(hits[i])
-        log.info('Hits left @{0}: {1}', i+1, hl)
-        log.info('Hits right @{0}: {1}', i+1, hr)
-        log.info('Hits @{0}: {1}', i+1, hh)
+        log.info('Hits left @{0}: {1}', i+1, metrics[f'hits_left@{i+1}'])
+        log.info('Hits right @{0}: {1}', i+1, metrics[f'hits_right@{i+1}'])
+        log.info('Hits @{0}: {1}', i+1, metrics[f'hits@{i+1}'])
 
-    log.info('Mean rank left: {0}', np.mean(ranks_left_arr))
-    log.info('Mean rank right: {0}', np.mean(ranks_right_arr))
-    log.info('Mean rank: {0}', np.mean(ranks_arr))
+    log.info('Mean rank left: {0}', metrics['mean_rank_left'])
+    log.info('Mean rank right: {0}', metrics['mean_rank_right'])
+    log.info('Mean rank: {0}', metrics['mean_rank'])
 
-    log.info('Mean reciprocal rank left: {0}', np.mean(1./ranks_left_arr))
-    log.info('Mean reciprocal rank right: {0}', np.mean(1./ranks_right_arr))
-    log.info('Mean reciprocal rank: {0}', np.mean(1./ranks_arr))
+    log.info('Mean reciprocal rank left: {0}', metrics['mrr_left'])
+    log.info('Mean reciprocal rank right: {0}', metrics['mrr_right'])
+    log.info('Mean reciprocal rank: {0}', metrics['mrr'])
+
+    return metrics  # Return metrics dictionary for use elsewhere
