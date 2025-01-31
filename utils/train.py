@@ -179,18 +179,34 @@ def evaluation(model, eval_loader):
     wandb.log(metrics)
 
     # Still log to console as before
-    log.info('')
+    # log.info('')
+    # for i in range(10):
+    #     log.info('Hits left @{0}: {1}', i+1, metrics[f'hits_left@{i+1}'])
+    #     log.info('Hits right @{0}: {1}', i+1, metrics[f'hits_right@{i+1}'])
+    #     log.info('Hits @{0}: {1}', i+1, metrics[f'hits@{i+1}'])
+
+    # log.info('Mean rank left: {0}', metrics['mean_rank_left'])
+    # log.info('Mean rank right: {0}', metrics['mean_rank_right'])
+    # log.info('Mean rank: {0}', metrics['mean_rank'])
+
+    # log.info('Mean reciprocal rank left: {0}', metrics['mrr_left'])
+    # log.info('Mean reciprocal rank right: {0}', metrics['mrr_right'])
+    # log.info('Mean reciprocal rank: {0}', metrics['mrr'])
+
+
+    # Still log to console as before
+    print('')
     for i in range(10):
-        log.info('Hits left @{0}: {1}', i+1, metrics[f'hits_left@{i+1}'])
-        log.info('Hits right @{0}: {1}', i+1, metrics[f'hits_right@{i+1}'])
-        log.info('Hits @{0}: {1}', i+1, metrics[f'hits@{i+1}'])
+        print('Hits left @{0}: {1}', i+1, metrics[f'hits_left@{i+1}'])
+        print('Hits right @{0}: {1}', i+1, metrics[f'hits_right@{i+1}'])
+        print('Hits @{0}: {1}', i+1, metrics[f'hits@{i+1}'])
 
-    log.info('Mean rank left: {0}', metrics['mean_rank_left'])
-    log.info('Mean rank right: {0}', metrics['mean_rank_right'])
-    log.info('Mean rank: {0}', metrics['mean_rank'])
+    print('Mean rank left: {0}', metrics['mean_rank_left'])
+    print('Mean rank right: {0}', metrics['mean_rank_right'])
+    print('Mean rank: {0}', metrics['mean_rank'])
 
-    log.info('Mean reciprocal rank left: {0}', metrics['mrr_left'])
-    log.info('Mean reciprocal rank right: {0}', metrics['mrr_right'])
-    log.info('Mean reciprocal rank: {0}', metrics['mrr'])
+    print('Mean reciprocal rank left: {0}', metrics['mrr_left'])
+    print('Mean reciprocal rank right: {0}', metrics['mrr_right'])
+    print('Mean reciprocal rank: {0}', metrics['mrr'])
 
     return metrics  # Return metrics dictionary for use elsewhere
