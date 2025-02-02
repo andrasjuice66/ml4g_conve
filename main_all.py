@@ -9,7 +9,7 @@ from utils.train import train, evaluation
 from torch.utils.data import DataLoader
 from utils.preprocess import LinkPredictionDataset, collate_fn, build_vocab
 from datetime import datetime
-
+import os
 
 config = {
     'batch_size': 128,
@@ -38,7 +38,7 @@ config = {
 
     #RUN CONFIGS
     'wandb_project': 'final-kg-runs',
-    'wandb_api_key': 'a15aa5a84ab821022d13f9aa3a59ec1770fe93a3',
+    'wandb_api_key': os.getenv('WANDB_API_KEY'),
     'datasets': ['WN18RR', 'FB15K-237'],# 'YAGO3-10'],  
     'models': ['deepconve', 'attnconve', 'conve'],
     'embedding_style': ['stacked', 'alternating'],
@@ -58,7 +58,7 @@ def main():
     for dataset in config['datasets']:
         for model_name in config['models']:
             for embedding_style in config['embedding_style']:
-                if (model_name == 'attnconve' or model_name == 'deepconve') and embedding_style == 'alternating': 
+                if (model_name == 'attnconve' or model_name == 'deepconve') and embedding_style == 'alternating': #alternating not required for attnconve and deepconve
                     continue
                 current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 run = wandb.init(
