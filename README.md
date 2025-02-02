@@ -1,1 +1,1 @@
-# ml4g_conve
+This is a repository for the Link Prediction project in the ML4G course.

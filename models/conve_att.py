@@ -9,26 +9,21 @@ class AttnConvE(nn.Module):
     def __init__(self, config, num_entities, num_relations):
         super().__init__()
 
-        # Dimensions and settings
         self.embedding_dim = config['embedding_dim']
         self.emb_dim1 = config['embedding_shape1']
         self.emb_dim2 = config['embedding_dim'] // self.emb_dim1
         self.use_stacked_embeddings = True
 
-        # Attention settings
         self.num_attention_heads = config['num_attention_heads']
         self.ff_hidden_dim = config['ff_hidden_dim']
 
-        # Dropout rates
         self.dropout_attention = config['dropout_attention']
         self.dropout_input = config['dropout_input']
         self.dropout_feature = config['dropout_feature']
 
-        # Embeddings
         self.emb_e = nn.Embedding(num_entities, self.embedding_dim, padding_idx=0)
         self.emb_rel = nn.Embedding(num_relations, self.embedding_dim, padding_idx=0)
 
-        # Attention Components
         self.self_attention = nn.MultiheadAttention(
             embed_dim=self.embedding_dim,
             num_heads=self.num_attention_heads,
@@ -36,7 +31,6 @@ class AttnConvE(nn.Module):
             batch_first=False
         )
 
-        # Feed-forward network after attention
         self.ffn = nn.Sequential(
             nn.Linear(self.embedding_dim, self.ff_hidden_dim),
             nn.ReLU(),
@@ -45,11 +39,9 @@ class AttnConvE(nn.Module):
             nn.Dropout(self.dropout_attention)
         )
 
-        # Layer normalization
         self.norm1 = nn.LayerNorm(self.embedding_dim)
         self.norm2 = nn.LayerNorm(self.embedding_dim)
 
-        # ConvE Components
         self.inp_drop = nn.Dropout(self.dropout_input)
         self.hidden_drop = nn.Dropout(self.dropout_attention)
         self.feature_map_drop = nn.Dropout2d(self.dropout_feature)
@@ -59,17 +51,14 @@ class AttnConvE(nn.Module):
         self.bn1 = nn.BatchNorm2d(32)
         self.bn2 = nn.BatchNorm1d(self.embedding_dim)
 
-        # Calculate conv output size
         conv_output_height = 2 * self.emb_dim1
         conv_output_width = self.emb_dim2
         fc_length = 32 * conv_output_height * conv_output_width
         self.fc = nn.Linear(fc_length, self.embedding_dim)
 
-        # Fusion parameters
         self.alpha = nn.Parameter(torch.tensor(0.5))
         self.beta = nn.Parameter(torch.tensor(0.5))
 
-        # Bias
         self.b = Parameter(torch.zeros(num_entities))
 
         self.init()
@@ -79,12 +68,10 @@ class AttnConvE(nn.Module):
         xavier_normal_(self.emb_rel.weight.data)
 
     def _apply_attention(self, e_s, e_r):
-        # Stack and apply attention
         seq = torch.stack([e_s, e_r], dim=0)
         attn_output, _ = self.self_attention(seq, seq, seq)
         seq = self.norm1(seq + attn_output)
 
-        # Feed forward
         ff_output = self.ffn(seq)
         seq = self.norm2(seq + ff_output)
 
@@ -105,18 +92,15 @@ class AttnConvE(nn.Module):
             return result.unsqueeze(1)
 
     def _apply_convolution(self, e_s, e_r):
-        # Arrange embeddings (stacked or interleaved)
         stacked_inputs = self._arrange_embeddings(e_s, e_r)
         stacked_inputs = self.bn0(stacked_inputs)
 
-        # Apply convolution
         x = self.inp_drop(stacked_inputs)
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
         x = self.feature_map_drop(x)
 
-        # Reshape and apply linear
         batch_size = x.size(0)
         x = x.view(batch_size, -1)
         x = self.fc(x)
@@ -127,24 +111,19 @@ class AttnConvE(nn.Module):
         return x
 
     def forward(self, e1, rel):
-        # Get embeddings
         e_s = self.emb_e(e1).view(-1, 1, self.emb_dim1, self.emb_dim2)
         e_r = self.emb_rel(rel).view(-1, 1, self.emb_dim1, self.emb_dim2)
 
-        # Attention branch
         e_s_att, e_r_att = self._apply_attention(
             e_s.view(e_s.size(0), -1),
             e_r.view(e_r.size(0), -1)
         )
 
-        # Convolution branch
         f_conv = self._apply_convolution(e_s, e_r)
 
-        # Fusion
         f_s = e_s_att + self.alpha * f_conv
         f_r = e_r_att + self.beta * f_conv
 
-        # Final prediction
         x = f_s * f_r
         x = torch.mm(x, self.emb_e.weight.transpose(1, 0))
         x = x + self.b
